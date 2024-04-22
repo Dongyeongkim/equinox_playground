@@ -21,8 +21,9 @@ class Norm(eqx.Module):
     _impl: str
     _eps: float
     act: str = 'none'
-
-    def __init__(self, num_features: int, impl, eps=1e-4, act='none', param_dtype='float32'):
+    cdtype: str = 'float32'
+    
+    def __init__(self, num_features: int, impl, eps=1e-4, act='none', compute_dtype='float32'):
         if '1em' in impl:
             impl, exponent = impl.split('1em')
             eps = 10 ** -int(exponent)
@@ -30,8 +31,9 @@ class Norm(eqx.Module):
         self._impl = impl
         self._eps = eps
         self.act = act
-        self.scale = jnp.ones((num_features,), dtype=param_dtype)
-        self.offset = jnp.zeros((num_features,), dtype=param_dtype)
+        self.cdtype = compute_dtype
+        self.scale = jnp.ones((num_features,), dtype='float32')
+        self.offset = jnp.zeros((num_features,), dtype='float32')
     
     def __call__(self, x):
         x = self._norm(x)
@@ -48,7 +50,7 @@ class Norm(eqx.Module):
             var = jnp.maximum(0, mean2 - jnp.square(mean))
             mult = self.scale * jax.lax.rsqrt(var + self._eps)
             x = (x - mean) * mult + self.offset
-            return x # should include precision control
+            return cast_to_compute(x, self.cdtype)
         elif self._impl == 'rms':
             dtype = x.dtype
             x = x.astype('float32') if x.dtype == jnp.float16 else x
@@ -58,20 +60,20 @@ class Norm(eqx.Module):
             x = x.astype('float32')
             mult = jax.lax.rsqrt((x * x).mean((-3, -2), keepdims=True) + self._eps)
             mult = mult * self.scale
-            return x * mult # should include precision control
+            return cast_to_compute(x * mult, self.cdtype)
         elif self._impl == 'grn':
             assert len(x.shape) >= 4, x.shape
             x = x.astype('float32')
             norm = jnp.linalg.norm(x, 2, (-3, -2), keepdims=True)
             norm /= (norm.mean(-1, keepdims=True) + self._eps)
             x = (norm * self.scale + 1) * x + self.offset
-            return x # should include precision control
+            return cast_to_compute(x, self.cdtype)
         elif self._impl == 'instance':
             x = x.astype('float32')
             mean = x.mean(axis=(-3, -2), keepdims=True)
             var = x.var(axis=(-3, -2), keepdims=True)
             x = (self.scale * jax.lax.rsqrt(var + self._eps)) * (x - mean) + self.offset
-            return x # should include precision control
+            return cast_to_compute(x, self.cdtype)
         else:
             raise NotImplementedError(self._impl)
 
@@ -126,7 +128,7 @@ if __name__ == '__main__':
         return model, opt_state, value
     
     model_scale = 0
-    for i in range(100):
+    for i in range(10000):
         norm_module, opt_state, value = make_step(loss, norm_module, opt_state, random_x_array, random_y_array)
         model_scale = jnp.sum(model_scale - norm_module.scale)
         print(model_scale)
