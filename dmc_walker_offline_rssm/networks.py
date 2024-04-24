@@ -33,6 +33,7 @@ class Linear(eqx.Module):
         pdtype="float32",
         cdtype="float32",
     ):
+        self.act = act
         self.pdtype = pdtype
         self.cdtype = cdtype
         assert isinstance(
@@ -50,7 +51,6 @@ class Linear(eqx.Module):
             self.use_bias = True
 
         self._norm = Norm(num_features=out_features, impl=norm, cdtype=self.cdtype)
-        self.act = act
 
     def __call__(self, x):
         x = cast_to_compute(x, self.cdtype)
@@ -70,7 +70,11 @@ class BlockLinear(eqx.Module):
     weight: jax.Array
     bias: jax.Array
     _norm: eqx.Module | List
+    in_features: int
+    out_features: int
     use_bias: bool
+    num_groups: int
+    block_norm: bool = False
     act: str = "none"
     pdtype: str = "float32"
     cdtype: str = "float32"
@@ -92,6 +96,7 @@ class BlockLinear(eqx.Module):
         pdtype="float32",
         cdtype="float32",
     ):
+        self.act = act
         self.pdtype = pdtype
         self.cdtype = cdtype
         assert isinstance(in_features, int), "The type of in_features should be int"
@@ -100,21 +105,66 @@ class BlockLinear(eqx.Module):
         assert (
             num_groups <= out_features
         ), "The type of num_groups cannot be larger than out_features"
+        assert (
+            in_features % num_groups == 0
+        ), "The number of in_features should be the multiplier of number of groups"
+        assert (
+            out_features % num_groups == 0
+        ), "The number of out_features should be the multiplier of number of groups"
+
+        self.in_features = in_features
+        self.out_features = out_features
+        self.num_groups = num_groups
+
         wkey, bkey = jax.random.split(key, 2)
-        self.weight = 0
+        if block_fans:
+            self.weight = variance_scaling(
+                scale=outscale, mode=fan, distribution=winit
+            )(
+                wkey,
+                (num_groups, in_features // num_groups, out_features // num_groups),
+                dtype=self.pdtype,
+            )
+        else:
+            self.weight = variance_scaling(
+                scale=outscale, mode=fan, distribution=winit, in_axis=(-3, -2)
+            )(wkey, (num_groups, in_features // num_groups, out_features // num_groups), dtype=self.pdtype) # Not sure this part is right or wrong
         if use_bias:
             self.bias = zeros(bkey, (out_features,), dtype=self.pdtype)
             self.use_bias = True
         if block_norm:
-            pass
+            self._norm = [
+                Norm(
+                    num_features=out_features // self.num_groups,
+                    impl=norm,
+                    cdtype=self.cdtype,
+                )
+                for _ in range(self.num_groups)
+            ]
+            self.block_norm = True
         else:
-            pass
+            self._norm = Norm(num_features=out_features, impl=norm, cdtype=self.cdtype)
 
     def __call__(self, x):
-        pass
+        x = cast_to_compute(x, self.cdtype)
+        x = self._layer(x)
+        if self.block_norm and self._norm != "none":
+            x = jnp.concatenate(
+                [f(y) for f, y in zip(self._norm, jnp.split(x, self.num_groups, -1))],
+                -1,
+            )
+        else:
+            x = self._norm(x)
+        x = get_act(self.act)(x)
+        return x
 
     def _layer(self, x):
-        pass
+        bdims = x.shape[:-1]
+        x = x.reshape(*bdims, self.num_groups, self.in_features // self.num_groups)
+        x = jnp.einsum("...ki,kio->...ko", x, self.weight.astype(self.cdtype))
+        x = x.reshape(*bdims, self.out_features)
+        x += self.bias.astype(self.cdtype)
+        return x
 
 
 class Norm(eqx.Module):
@@ -265,29 +315,42 @@ if __name__ == "__main__":
 
     CDTYPE = "bfloat16"
 
-    norm_module = Linear(
+    linear_module = Linear(
         jax.random.key(0),
         in_features=1024,
-        out_features=32,
+        out_features=8192,
         act="sigmoid",
         norm="rms",
         cdtype=CDTYPE,
     )
-    random_x_array = random.normal(
-        random.key(0), shape=(16, 64, 32, 1024), dtype=CDTYPE
+    blocklinear_module = BlockLinear(
+        jax.random.key(0),
+        in_features=1024,
+        out_features=8192,
+        num_groups=8,
+        act="sigmoid",
+        norm="rms",
+        block_fans=False,
+        block_norm=True,
+        cdtype=CDTYPE,
     )
-    random_y_array = random.bernoulli(random.key(0), shape=(16, 64, 32, 32)).astype(
+    random_x_array = random.normal(
+        random.key(0), shape=(16, 64, 1024), dtype=CDTYPE
+    )
+    random_y_array = random.bernoulli(random.key(0), shape=(16, 64, 8192)).astype(
         CDTYPE
     )
-    print(norm_module)
+
+    print('starting on linear')
+    print(linear_module)
     print(random_x_array.shape)
-    print(norm_module(random_x_array).dtype)
+    print(linear_module(random_x_array).dtype)
 
     def loss(model, x, y):
         return jnp.mean((jax.vmap(model)(x) - y) ** 2)
 
     optim = optax.rmsprop(learning_rate=4e-5)
-    opt_state = optim.init(eqx.filter(norm_module, eqx.is_array))
+    opt_state = optim.init(eqx.filter(linear_module, eqx.is_array))
     print(opt_state)
 
     @eqx.filter_jit
@@ -303,8 +366,29 @@ if __name__ == "__main__":
     N = 10000
     a = time.time()
     for i in range(N):
-        norm_module, opt_state, value = make_step(
-            loss, norm_module, opt_state, random_x_array, random_y_array
+        linear_module, opt_state, value = make_step(
+            loss, linear_module, opt_state, random_x_array, random_y_array
+        )
+        # print(value)
+    print((time.time() - a) / N)
+    
+    print('sleeping...')
+    time.sleep(5)
+    print('starting on blocklinear')
+
+    print(blocklinear_module)
+    print(random_x_array.shape)
+    print(blocklinear_module(random_x_array).dtype)
+
+    optim = optax.rmsprop(learning_rate=4e-5)
+    opt_state = optim.init(eqx.filter(blocklinear_module, eqx.is_array))
+    print(opt_state)
+
+    N = 10000
+    a = time.time()
+    for i in range(N):
+        blocklinear_module, opt_state, value = make_step(
+            loss, blocklinear_module, opt_state, random_x_array, random_y_array
         )
         # print(value)
     print((time.time() - a) / N)
