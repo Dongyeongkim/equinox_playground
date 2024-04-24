@@ -317,27 +317,27 @@ if __name__ == "__main__":
 
     linear_module = Linear(
         jax.random.key(0),
-        in_features=1024,
-        out_features=8192,
+        in_features=1536,
+        out_features=12288,
         act="sigmoid",
         norm="rms",
         cdtype=CDTYPE,
     )
     blocklinear_module = BlockLinear(
         jax.random.key(0),
-        in_features=1024,
-        out_features=8192,
+        in_features=1536,
+        out_features=12288,
         num_groups=8,
         act="sigmoid",
         norm="rms",
         block_fans=False,
-        block_norm=True,
+        block_norm=False,
         cdtype=CDTYPE,
     )
     random_x_array = random.normal(
-        random.key(0), shape=(16, 64, 1024), dtype=CDTYPE
+        random.key(0), shape=(16, 64, 1536), dtype=CDTYPE
     )
-    random_y_array = random.bernoulli(random.key(0), shape=(16, 64, 8192)).astype(
+    random_y_array = random.bernoulli(random.key(0), shape=(16, 64, 12288)).astype(
         CDTYPE
     )
 
