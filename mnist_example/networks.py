@@ -1,15 +1,8 @@
 import jax
-import einops
+from utils import *
 import equinox as eqx
 import jax.numpy as jnp
-from typing import List, Tuple
-
-
-from utils import *
-
-
-class Dist(eqx.Module):
-    pass
+from typing import List
 
 
 class Conv2D(eqx.Module):
@@ -30,9 +23,9 @@ class Conv2D(eqx.Module):
         key,
         in_channels: int,
         out_channels: int,
-        groups: int,
         kernel_size: int,
         stride: int,
+        groups: int = 1,
         transpose: bool = False,
         act: str = "none",
         norm: str = "none",
@@ -66,6 +59,7 @@ class Conv2D(eqx.Module):
         ), "In ConvTranspose the Number of Groups must be 1"
         wkey, bkey = jax.random.split(key, num=2)
         self.stride = stride
+        self.num_groups = groups
         self.kernel = Initializer(dist=winit, scale=outscale, mode=fan)(
             wkey,
             (kernel_size, kernel_size, in_channels, out_channels),
