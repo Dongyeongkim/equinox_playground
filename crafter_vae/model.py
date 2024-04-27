@@ -10,6 +10,7 @@ class VAE(eqx.Module):
     enc: eqx.Module
     dec: eqx.Module
     dist: eqx.Module
+    latent_dim: int
     pdtype: str = "float32"
     cdtype: str = "float32"
 
@@ -17,6 +18,7 @@ class VAE(eqx.Module):
         self,
         key,
         latent_dim,
+        debug_outer,
         channel_depth,
         channel_multipliers,
         kernel_size,
@@ -31,12 +33,14 @@ class VAE(eqx.Module):
         enc_param_key, dec_param_key, dist_param_key = random.split(key, num=3)
         self.enc = ImageEncoder(
             enc_param_key,
+            debug_outer,
             channel_depth,
             channel_multipliers,
             kernel_size,
             stride,
             norm,
             act,
+            minres,
             use_rgb,
             pdtype,
             cdtype,
@@ -44,12 +48,14 @@ class VAE(eqx.Module):
         self.dec = ImageDecoder(
             dec_param_key,
             latent_dim,
+            debug_outer,
             channel_depth,
             channel_multipliers,
             kernel_size,
             stride,
             norm,
             act,
+            minres,
             use_rgb,
             pdtype,
             cdtype,
@@ -61,9 +67,11 @@ class VAE(eqx.Module):
             pdtype=pdtype,
             cdtype=cdtype,
         )
+        self.latent_dim = latent_dim
         self.pdtype = pdtype
         self.cdtype = cdtype
 
+    @eqx.filter_jit
     def __call__(self, x, key):
         x = cast_to_compute(x, self.cdtype)
         enc_x = self.enc(x)
@@ -71,6 +79,7 @@ class VAE(eqx.Module):
         recon_x = self.dec(stoch)
         return recon_x, distinfo
     
+    @eqx.filter_jit
     def generate(self, z):
         return self.dec(z)
 
@@ -119,22 +128,26 @@ class ImageEncoder(eqx.Module):
     def __init__(
         self,
         key,
+        debug_outer,
         channel_depth,
         channel_multipliers,
         kernel_size,
         stride,
         norm="rms",
         act="silu",
+        minres=4,
         use_rgb=True,
         pdtype="float32",
         cdtype="float32",
     ):
 
-        channels = (3 if use_rgb else 1,) + (
-            channel_depth * mult for mult in channel_multipliers
+        channels = (3 if use_rgb else 1,) + tuple(
+            [channel_depth * mult for mult in channel_multipliers]
         )
+
         self._conv_layers = []
         for i in range(len(channel_multipliers)):
+            stride_ = 1 if (debug_outer and (i == 0)) else stride
             key, param_key = random.split(key, num=2)
             self._conv_layers.append(
                 Conv2D(
@@ -142,7 +155,7 @@ class ImageEncoder(eqx.Module):
                     in_channels=channels[i],
                     out_channels=channels[i + 1],
                     kernel_size=kernel_size,
-                    stride=stride,
+                    stride=stride_,
                     act=act,
                     norm=norm,
                     pdtype=pdtype,
@@ -171,6 +184,7 @@ class ImageDecoder(eqx.Module):
         self,
         key,
         latent_dim,
+        debug_outer,
         channel_depth,
         channel_multipliers,
         kernel_size,
@@ -182,14 +196,15 @@ class ImageDecoder(eqx.Module):
         pdtype="float32",
         cdtype="float32",
     ):
-        channels = (3 if use_rgb else 1,) + (
-            channel_depth * mult for mult in channel_multipliers
+        channels = (3 if use_rgb else 1,) + tuple(
+            [channel_depth * mult for mult in channel_multipliers]
         )
-        key, param_key = random.key(key, num=2)
+
+        key, param_key = random.split(key, num=2)
         self._linear_proj = Linear(
             param_key,
             in_features=latent_dim,
-            out_features=(minres**2) * channels[-1],
+            out_features=(minres**2)*channels[-1],
             act=act,
             norm=norm,
             pdtype=pdtype,
@@ -197,6 +212,7 @@ class ImageDecoder(eqx.Module):
         )
         self._convtr_layers = []
         for i in reversed(range(1, len(channels))):
+            stride_ = 1 if (debug_outer and (i == 1)) else stride
             key, param_key = random.split(key, num=2)
             self._convtr_layers.append(
                 Conv2D(
@@ -204,7 +220,7 @@ class ImageDecoder(eqx.Module):
                     in_channels=channels[i],
                     out_channels=channels[i - 1],
                     kernel_size=kernel_size,
-                    stride=stride,
+                    stride=stride_,
                     transpose=True,
                     act=act,
                     norm=norm,
