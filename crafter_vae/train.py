@@ -73,7 +73,7 @@ if __name__ == '__main__':
     config.seed = 0
     config.num_epochs = 100
     config.batch_size = 1024
-    config.learning_rate = 4e-5
+    config.learning_rate = 1e-3
     config.latent_dim = 50
     config.debug_outer = True
     config.channel_depth = 32
