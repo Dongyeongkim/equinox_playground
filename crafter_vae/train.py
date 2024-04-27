@@ -56,7 +56,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict):
             model, opt_state, loss_value = train_step(model, optim, opt_state, batch, sampling_key)
         
         main_key, skey1, skey2 = random.split(main_key, num=3)
-        metrics, comparison, sample = eval_f(model, test_ds[128*epoch:128*(epoch+1)], skey1, skey2)
+        metrics, comparison, sample = eval_f(model, test_ds[64*epoch:64*(epoch+1)], skey1, skey2)
         save_image(comparison, f'results/reconstruction_{epoch}.png', nrow=8)
         save_image(sample, f'results/sample_{epoch}.png', nrow=8)
         
@@ -71,9 +71,9 @@ if __name__ == '__main__':
     os.environ['CUDA_VISIBLE_DEVICES'] = '0'
     config = ml_collections.ConfigDict()
     config.seed = 0
-    config.num_epochs = 30
+    config.num_epochs = 100
     config.batch_size = 1024
-    config.learning_rate = 1e-3
+    config.learning_rate = 4e-5
     config.latent_dim = 50
     config.debug_outer = True
     config.channel_depth = 32
