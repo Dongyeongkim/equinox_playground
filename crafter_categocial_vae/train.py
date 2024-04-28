@@ -6,7 +6,7 @@ from model import CategoricalVAE
 from jax import random
 from jax import numpy as jnp
 from crafter_dataset import get_crafter_dataset
-from utils import mse, symlog, symexp, save_image
+from utils import mse, symlog, symexp, save_image, eqx_adaptive_grad_clip
 
 
 @eqx.filter_jit
@@ -67,7 +67,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict):
         config.stride,
         cdtype=config.cdtype,
     )
-    optim = optax.adam(learning_rate=config.learning_rate, eps=1e-7)
+    optim = optax.chain(eqx_adaptive_grad_clip(0.03), optax.adam(learning_rate=config.learning_rate, eps=1e-7))
     opt_state = optim.init(eqx.filter(model, eqx.is_array))
     main_key, dataset_key = random.split(main_key, num=2)
     train_ds, test_ds = get_crafter_dataset(

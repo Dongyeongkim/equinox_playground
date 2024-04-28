@@ -1,8 +1,11 @@
 import jax
 import math
 import numpy as np
-import jax.numpy as jnp
+import equinox as eqx
 from PIL import Image
+import jax.numpy as jnp
+from optax._src import base
+from optax._src.clipping import unitwise_norm, unitwise_clip
 
 # input normalisation
 
@@ -88,3 +91,27 @@ def save_image(ndarray, fp, nrow=8, padding=2, pad_value=0.0, format_img=None):
     ndarr = np.array(jnp.clip(grid * 255.0 + 0.5, 0, 255).astype(jnp.uint8))
     im = Image.fromarray(ndarr.copy())
     im.save(fp, format=format_img)
+
+
+# adaptive_gradient_clip for equinox
+
+AdaptiveGradClipState = base.EmptyState
+
+def eqx_adaptive_grad_clip(clipping: float, eps: float = 1e-3):
+    def init_fn(params):
+        del params
+        return AdaptiveGradClipState()
+    
+    def update_fn(updates, state, params):
+        if params is None:
+            raise ValueError(base.NO_PARAMS_MSG)
+        params = eqx.filter(params, eqx.is_array)
+        g_norm, p_norm = jax.tree_util.tree_map(unitwise_norm, (updates, params))
+        # Maximum allowable norm.
+        max_norm = jax.tree_util.tree_map(lambda x: clipping * jnp.maximum(x, eps), p_norm)
+        # If grad norm > clipping * param_norm, rescale.
+        updates = jax.tree_util.tree_map(unitwise_clip, g_norm, max_norm, updates)
+        return updates, state
+    
+    return base.GradientTransformation(init_fn, update_fn)
+
