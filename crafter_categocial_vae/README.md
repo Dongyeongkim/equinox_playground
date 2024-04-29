@@ -1,6 +1,6 @@
-# Crafter-VAE
+# Crafter-CategoricalVAE
 
-Similar architecture of DreamerV3(after Apr 17 of 2024), with continuous latent space with dim=50 as same as DreamerV1.
+Similar architecture of DreamerV3(after Apr 17 of 2024).
 
 Tested on training [crafter](https://github.com/danijar/crafter)
 
