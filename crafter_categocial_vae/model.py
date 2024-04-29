@@ -4,6 +4,9 @@ from jax import random
 import jax.numpy as jnp
 from utils import cast_to_compute
 from networks import Conv2D, Linear
+from tensorflow_probability.substrates import jax as tfp
+
+tfd = tfp.distributions
 
 
 class CategoricalVAE(eqx.Module):
@@ -64,7 +67,7 @@ class CategoricalVAE(eqx.Module):
             pdtype,
             cdtype,
         )
-        self.dist = OneHotDist(
+        self.dist = Dist(
             dist_param_key,
             latent_dim,
             latent_cls,
@@ -91,7 +94,28 @@ class CategoricalVAE(eqx.Module):
         return self.dec(z)
 
 
-class OneHotDist(eqx.Module):
+class OneHotDist(tfd.OneHotCategorical):
+    def __init__(self, logits=None, probs=None, dtype="float32"):
+        super().__init__(logits, probs, dtype)
+    
+    @classmethod
+    def _parameter_properties(cls, dtype, num_classes=None):
+        return super()._parameter_properties(dtype)
+    
+    def sample(self, sample_shape=(), seed=None):
+        sample = jax.lax.stop_gradient(super().sample(sample_shape, seed))
+        probs = self._pad(super().probs_parameter(), sample.shape)
+        sample = jax.lax.stop_gradient(sample) + (probs - jax.lax.stop_gradient(probs)).astype(sample.dtype)
+        return sample
+    
+    def _pad(self, tensor, shape):
+        while len(tensor.shape) < len(shape):
+            tensor = tensor[None]
+        return tensor
+
+
+
+class Dist(eqx.Module):
     _logit: eqx.Module
     latent_dim: int
     latent_cls: int
@@ -122,19 +146,15 @@ class OneHotDist(eqx.Module):
     def __call__(self, x, key):
         x = cast_to_compute(x, compute_dtype=self.cdtype)
         x = self._logit(x)
-        x = x.reshape(x.shape[0], self.latent_dim, self.latent_cls)
+        logit = x.reshape(x.shape[0], self.latent_dim, self.latent_cls)
         if self.unimix:
-            probs = jax.nn.softmax(x, -1)
+            probs = jax.nn.softmax(logit, -1)
             uniform = jnp.ones_like(probs) / probs.shape[-1]
             probs = (1 - self.unimix) * probs + self.unimix * uniform
-            x = jnp.log(probs)
+            logit = jnp.log(probs)
         else:
-            x = jax.nn.log_softmax(x, -1)
-        sample = jax.lax.stop_gradient(jax.nn.one_hot(random.categorical(key, x), self.latent_cls))
-        probs = jnp.exp(x)
-        grad_applied_sample = sample + (probs - jax.lax.stop_gradient(probs)).astype(
-            sample.dtype
-        )
+            logit = jax.nn.log_softmax(logit, -1)
+        grad_applied_sample = OneHotDist(logit, dtype=self.cdtype).sample(seed=key)
         return grad_applied_sample.reshape(x.shape[0], -1)
         
 
