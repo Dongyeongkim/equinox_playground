@@ -1,8 +1,13 @@
 import jax
 from utils import *
+import numpy as np
 import equinox as eqx
 import jax.numpy as jnp
 from typing import List
+
+
+class Dist(eqx.Module):
+    pass
 
 
 class Conv2D(eqx.Module):
@@ -370,7 +375,6 @@ class Norm(eqx.Module):
 
 class Initializer:
     VARIANCE_FACTOR = 1.0
-    FORCE_STDDEV = 0.0
 
     def __init__(self, dist="normal", scale=1.0, mode="in", block_fans=False):
         self.dist = dist
@@ -390,11 +394,8 @@ class Initializer:
             value = jax.random.uniform(key, shape, dtype, -limit, limit)
         elif self.dist == "normal":
             value = jax.random.truncated_normal(key, -2, 2, shape)
-            if self.FORCE_STDDEV > 0.0:
-                value *= 1.1368 * self.FORCE_STDDEV
-            else:
-                value *= 1.1368 * np.sqrt(self.VARIANCE_FACTOR / fan)
-                value = value.astype(dtype)
+            value *= 1.1368 * np.sqrt(self.VARIANCE_FACTOR / fan)
+            value = value.astype(dtype)
         elif self.dist == "normed":
             value = jax.random.uniform(key, shape, dtype, -1, 1)
             value /= jnp.linalg.norm(value.reshape((-1, shape[-1])), 2, 0)
@@ -407,7 +408,7 @@ class Initializer:
         elif self.dist == "ortho":
             nrows, ncols = shape[-1], np.prod(shape) // shape[-1]
             matshape = (nrows, ncols) if nrows > ncols else (ncols, nrows)
-            mat = jax.random.normal(nj.seed(), matshape, dtype)
+            mat = jax.random.normal(key, matshape, dtype)
             qmat, rmat = jnp.linalg.qr(mat)
             qmat *= jnp.sign(jnp.diag(rmat))
             qmat = qmat.T if nrows < ncols else qmat

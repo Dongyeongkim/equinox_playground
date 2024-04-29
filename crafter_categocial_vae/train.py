@@ -67,7 +67,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict):
         config.stride,
         cdtype=config.cdtype,
     )
-    optim = optax.chain(eqx_adaptive_grad_clip(0.03), optax.rmsprop(learning_rate=config.learning_rate, eps=1e-20, momentum=True))
+    optim = optax.chain(eqx_adaptive_grad_clip(0.3), optax.rmsprop(learning_rate=config.learning_rate, eps=1e-20, momentum=True))
     opt_state = optim.init(eqx.filter(model, eqx.is_array))
     main_key, dataset_key = random.split(main_key, num=2)
     train_ds, test_ds = get_crafter_dataset(
