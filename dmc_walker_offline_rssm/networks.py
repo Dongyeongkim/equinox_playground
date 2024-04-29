@@ -7,7 +7,27 @@ from typing import List
 
 
 class Dist(eqx.Module):
-    pass
+    out: eqx.Module
+    std: eqx.Module
+    dist: str
+    outscale: float = 0.1
+    minstd: float = 1.0
+    maxstd: float = 1.0
+    unimix: float = 0.0
+    bins: int = 255
+    pdtype: str = "float32"
+    cdtype: str = "float32"
+
+    def __init__(self, key, in_features: int, out_features: int, dist="mse"):
+        if 'normal' in dist:
+            out_key, std_key = random.split(key, num=2)
+            self.out = Linear(out_key, in_features, out_features, ...) # should include the parameter also
+            self.std = Linear(std_key, in_features, out_features, ...) # should include the parameter also
+        else:
+            self.out = Linear(key, in_features, out_features, ...) # should include the parameter also
+
+    def __call__(self, x):
+        pass
 
 
 class Conv2D(eqx.Module):
