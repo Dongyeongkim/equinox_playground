@@ -4,30 +4,227 @@ import numpy as np
 import equinox as eqx
 import jax.numpy as jnp
 from typing import List
+from tensorflow_probability.substrates import jax as tfp
+
+tfd = tfp.distributions
 
 
 class Dist(eqx.Module):
-    out: eqx.Module
-    std: eqx.Module
-    dist: str
-    outscale: float = 0.1
-    minstd: float = 1.0
-    maxstd: float = 1.0
-    unimix: float = 0.0
-    bins: int = 255
+    _proj: dict
+    _dist: list
+    out_shape: tuple
+    padding: int
+    num_units: int
+    outscale: float
+    minstd: float
+    maxstd: float
+    unimix: float
+    bins: int
     pdtype: str = "float32"
     cdtype: str = "float32"
 
-    def __init__(self, key, in_features: int, out_features: int, dist="mse"):
-        if 'normal' in dist:
-            out_key, std_key = random.split(key, num=2)
-            self.out = Linear(out_key, in_features, out_features, ...) # should include the parameter also
-            self.std = Linear(std_key, in_features, out_features, ...) # should include the parameter also
+    def __init__(
+        self,
+        key,
+        in_features: int,
+        out_shape: tuple,
+        dist="mse",
+        use_bias=True,
+        minstd=1.0,
+        maxstd=1.0,
+        unimix=0.0,
+        bins=255,
+        outscale=0.1,
+        winit: str = "normal",
+        fan="in",
+        fanin=0,
+        pdtype="float32",
+        cdtype="float32",
+    ):
+        self.minstd = minstd
+        self.maxstd = maxstd
+        self.unimix = unimix
+
+        self.bins = bins
+        self.padding = 0
+        if "twohot" in dist or dist == "softmax":
+            self.padding = int(self.bins % 2)
+            self.out_shape = (*out_shape, self.bins + self.padding)
+
+        self.num_units = int(np.prod(self.out_shape))
+        self.pdtype = pdtype
+        self.cdtype = cdtype
+        main_key, param_key = random.split(key, num=2)
+
+        if "normal" in dist:
+            param_key1, param_key2 = random.split(param_key)
+            self._proj = {
+                "mean": Linear(
+                    param_key1,
+                    in_features,
+                    self.num_units,
+                    use_bias=use_bias,
+                    outscale=outscale,
+                    winit=winit,
+                    fan=fan,
+                    fanin=fanin,
+                    pdtype=self.pdtype,
+                    cdtype=self.cdtype,
+                ),
+                "std": Linear(
+                    param_key2,
+                    in_features,
+                    self.num_units,
+                    use_bias=use_bias,
+                    outscale=outscale,
+                    winit=winit,
+                    fan=fan,
+                    fanin=fanin,
+                    pdtype=self.pdtype,
+                    cdtype=self.cdtype,
+                ),
+            }
         else:
-            self.out = Linear(key, in_features, out_features, ...) # should include the parameter also
+            self._proj = {
+                "mean": Linear(
+                    param_key1,
+                    in_features,
+                    self.num_units,
+                    use_bias=use_bias,
+                    outscale=outscale,
+                    winit=winit,
+                    fan=fan,
+                    fanin=fanin,
+                    pdtype=self.pdtype,
+                    cdtype=self.cdtype,
+                )
+            }
+
+        last_axis_of_output_shape = self.out_shape[-1] - self.padding
+
+        if dist == "symlog_mse":
+            fwd, bwd = symlog, symexp
+            self._dist = [
+                lambda out: TransformedMseDist(out, len(self.out_shape), fwd, bwd)
+            ]
+
+        if dist == "hyperbolic_mse":
+            fwd = lambda x, eps=1e-3: (
+                jnp.sign(x) * (jnp.sqrt(jnp.abs(x) + 1) - 1) + eps * x
+            )
+            bwd = lambda x, eps=1e-3: jnp.sign(x) * (
+                jnp.square(
+                    jnp.sqrt(1 + 4 * eps * (eps + 1 + jnp.abs(x))) / 2 / eps
+                    - 1 / 2 / eps
+                )
+                - 1
+            )
+            self._dist = [
+                lambda out: TransformedMseDist(out, len(self.out_shape), fwd, bwd)
+            ]
+
+        if dist == "symlog_and_twohot":
+            bins = np.linspace(-20, 20, last_axis_of_output_shape)
+            self._dist = [lambda out: TwoHotDist(out, bins, symlog, symexp)]
+
+        if dist == "symexp_twohot":
+            if last_axis_of_output_shape % 2 == 1:
+                half = jnp.linspace(
+                    -20, 0, (last_axis_of_output_shape - 1) // 2 + 1, dtype="float32"
+                )
+                half = symexp(half)
+                bins = jnp.concatenate([half, -half[:-1][::-1]], 0)
+            else:
+                half = jnp.linspace(
+                    -20, 0, last_axis_of_output_shape // 2, dtype="float32"
+                )
+                half = symexp(half)
+                bins = jnp.concatenate([half, -half[::-1]], 0)
+            self._dist = [lambda out: TwoHotDist(out, bins, len(self.out_shape))]
+
+        if dist == "hyperbolic_tangent":
+            eps = 0.001
+            f = lambda x: np.sign(x) * (
+                np.square(
+                    np.sqrt(1 + 4 * eps * (eps + 1 + np.abs(x))) / 2 / eps - 1 / 2 / eps
+                )
+                - 1
+            )
+            bins = f(np.linspace(-300, 300, last_axis_of_output_shape))
+            self._dist = [lambda out: TwoHotDist(out, bins, len(self.out_shape))]
+
+        if dist == "mse":
+            self._dist = [lambda out: MSEDist(out, len(self.out_shape), "sum")]
+
+        if dist == "huber":
+            self._dist = [lambda out: HuberDist(out, len(self.out_shape), "sum")]
+
+        
+        # Should add entropy term
+        if dist == "normal":
+            self._dist = [
+                lambda out, std: tfd.Independent(
+                    tfd.Normal(jnp.tanh(out), ((self.maxstd - self.minstd) * jax.nn.sigmoid(std + 2.0) + self.minstd)), len(self.out_shape)
+                )
+            ]
+        
+        # Should add entropy term
+        if dist == "trunc_normal":
+            self._dist = [
+                lambda out, std: tfd.Independent(
+                    tfd.TruncatedNormal(jnp.tanh(out), ((self.maxstd - self.minstd) * jax.nn.sigmoid(std + 2.0) + self.minstd)), len(self.out_shape)
+                )
+            ]
+        
+        if dist == "binary":
+            if len(self.shape) > 1:
+                self._dist = [
+                    lambda out: tfd.Independent(
+                        tfd.Bernoulli(out), len(self.out_shape) - 1
+                    )
+                ]
+            else:
+                self._dist = [lambda out: tfd.Bernoulli(out)]
+
+        if dist == "softmax":
+            if len(self.shape) > 1:
+                self._dist = [
+                    lambda out: tfd.Independent(
+                        tfd.Categorical(out), len(self.out_shape) - 1
+                    )
+                ]
+            else:
+                self._dist = [lambda out: tfd.Categorical(out)]
+        
+        # Should add entropy term
+        if dist == "onehot":
+            if self.unimix:
+                self._dist = [
+                    lambda out: jax.nn.softmax(out, -1),
+                    lambda out: (1 - self.unimix) * out
+                    + self.unimix * (jnp.ones_like(out) / out.shape[-1]),
+                    lambda out: jnp.log(out),
+                ]
+            else:
+                self._dist = [lambda out: jax.nn.log_softmax(out, -1)]
+            if len(self.shape) > 1:
+                self._dist.append(
+                    lambda out: tfd.Independent(
+                        OneHotDist(out), len(self.out_shape) - 1
+                    )
+                )
+
+            else:
+                self._dist.append(lambda out: OneHotDist(out))
+
+        else:
+            raise NotImplementedError(dist)
 
     def __call__(self, x):
-        pass
+        for func in self._dist:
+            x = func(x)
+        return x
+
 
 
 class Conv2D(eqx.Module):
