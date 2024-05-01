@@ -105,7 +105,9 @@ class Dist(eqx.Module):
         if dist == "symlog_mse":
             fwd, bwd = symlog, symexp
             self._dist = [
-                lambda out: TransformedMseDist(out, len(self.out_shape), fwd, bwd)
+                lambda out: TransformedMseDist(
+                    out["mean"], len(self.out_shape), fwd, bwd
+                )
             ]
 
         if dist == "hyperbolic_mse":
@@ -120,12 +122,14 @@ class Dist(eqx.Module):
                 - 1
             )
             self._dist = [
-                lambda out: TransformedMseDist(out, len(self.out_shape), fwd, bwd)
+                lambda out: TransformedMseDist(
+                    out["mean"], len(self.out_shape), fwd, bwd
+                )
             ]
 
         if dist == "symlog_and_twohot":
             bins = np.linspace(-20, 20, last_axis_of_output_shape)
-            self._dist = [lambda out: TwoHotDist(out, bins, symlog, symexp)]
+            self._dist = [lambda out: TwoHotDist(out["mean"], bins, symlog, symexp)]
 
         if dist == "symexp_twohot":
             if last_axis_of_output_shape % 2 == 1:
@@ -140,7 +144,9 @@ class Dist(eqx.Module):
                 )
                 half = symexp(half)
                 bins = jnp.concatenate([half, -half[::-1]], 0)
-            self._dist = [lambda out: TwoHotDist(out, bins, len(self.out_shape))]
+            self._dist = [
+                lambda out: TwoHotDist(out["mean"], bins, len(self.out_shape))
+            ]
 
         if dist == "hyperbolic_tangent":
             eps = 0.001
@@ -151,62 +157,81 @@ class Dist(eqx.Module):
                 - 1
             )
             bins = f(np.linspace(-300, 300, last_axis_of_output_shape))
-            self._dist = [lambda out: TwoHotDist(out, bins, len(self.out_shape))]
+            self._dist = [
+                lambda out: TwoHotDist(out["mean"], bins, len(self.out_shape))
+            ]
 
         if dist == "mse":
-            self._dist = [lambda out: MSEDist(out, len(self.out_shape), "sum")]
+            self._dist = [lambda out: MSEDist(out["mean"], len(self.out_shape), "sum")]
 
         if dist == "huber":
-            self._dist = [lambda out: HuberDist(out, len(self.out_shape), "sum")]
+            self._dist = [
+                lambda out: HuberDist(out["mean"], len(self.out_shape), "sum")
+            ]
 
-        
         # Should add entropy term
         if dist == "normal":
             self._dist = [
-                lambda out, std: tfd.Independent(
-                    tfd.Normal(jnp.tanh(out), ((self.maxstd - self.minstd) * jax.nn.sigmoid(std + 2.0) + self.minstd)), len(self.out_shape)
+                lambda out: tfd.Independent(
+                    tfd.Normal(
+                        jnp.tanh(out["mean"]),
+                        (
+                            (self.maxstd - self.minstd)
+                            * jax.nn.sigmoid(out["std"] + 2.0)
+                            + self.minstd
+                        ),
+                    ),
+                    len(self.out_shape),
                 )
             ]
-        
+
         # Should add entropy term
         if dist == "trunc_normal":
             self._dist = [
-                lambda out, std: tfd.Independent(
-                    tfd.TruncatedNormal(jnp.tanh(out), ((self.maxstd - self.minstd) * jax.nn.sigmoid(std + 2.0) + self.minstd)), len(self.out_shape)
+                lambda out: tfd.Independent(
+                    tfd.TruncatedNormal(
+                        jnp.tanh(out["mean"]),
+                        (
+                            (self.maxstd - self.minstd)
+                            * jax.nn.sigmoid(out["std"] + 2.0)
+                            + self.minstd
+                        ),
+                    ),
+                    len(self.out_shape),
                 )
             ]
-        
+
         if dist == "binary":
             if len(self.shape) > 1:
                 self._dist = [
                     lambda out: tfd.Independent(
-                        tfd.Bernoulli(out), len(self.out_shape) - 1
+                        tfd.Bernoulli(out["mean"]), len(self.out_shape) - 1
                     )
                 ]
             else:
-                self._dist = [lambda out: tfd.Bernoulli(out)]
+                self._dist = [lambda out: tfd.Bernoulli(out["mean"])]
 
         if dist == "softmax":
             if len(self.shape) > 1:
                 self._dist = [
                     lambda out: tfd.Independent(
-                        tfd.Categorical(out), len(self.out_shape) - 1
+                        tfd.Categorical(out["mean"]), len(self.out_shape) - 1
                     )
                 ]
             else:
-                self._dist = [lambda out: tfd.Categorical(out)]
-        
+                self._dist = [lambda out: tfd.Categorical(out["mean"])]
+
         # Should add entropy term
         if dist == "onehot":
             if self.unimix:
                 self._dist = [
-                    lambda out: jax.nn.softmax(out, -1),
+                    lambda out: jax.nn.softmax(out["mean"], -1),
                     lambda out: (1 - self.unimix) * out
                     + self.unimix * (jnp.ones_like(out) / out.shape[-1]),
                     lambda out: jnp.log(out),
                 ]
             else:
-                self._dist = [lambda out: jax.nn.log_softmax(out, -1)]
+                self._dist = [lambda out: jax.nn.log_softmax(out["mean"], -1)]
             if len(self.shape) > 1:
                 self._dist.append(
                     lambda out: tfd.Independent(
@@ -221,10 +246,10 @@ class Dist(eqx.Module):
             raise NotImplementedError(dist)
 
     def __call__(self, x):
+        dist = {k: v(x) for k, v in self._proj.items()}
         for func in self._dist:
-            x = func(x)
+            dist = func(dist)
         return x
-
 
 
 class Conv2D(eqx.Module):
