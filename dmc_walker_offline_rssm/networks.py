@@ -14,14 +14,20 @@ sg = lambda x: jax.tree_util.tree_map(jax.lax.stop_gradient, x)
 
 
 class RSSM(eqx.Module):
-    
+    imglogit: eqx.Module
+    obslogit: eqx.Module
+    dynlayers: dict
+    imglayers: dict
+    obslayers: dict
+
     deter: int
     hidden: int
     latent_dim: int
     latent_cls: int
-    
-    norm: str = 'rms'
-    act: str = 'silu'
+    action_dim: int
+
+    norm: str = "rms"
+    act: str = "silu"
     unroll: bool = False
     unimix: float = 0.01
     outscale: float = 1.0
@@ -36,7 +42,75 @@ class RSSM(eqx.Module):
     cdtype: str = "float32"
 
     def __init__(self, key, deter, stoch):
-        pass
+        main_key, img_key, obs_key, dyn_key = random.split(key, num=4)
+
+        img_key, imglogit_key = random.split(img_key, num=2)
+        self.imglayers = {
+            "imglogit": Linear(
+                imglogit_key,
+                in_features=self.hidden,
+                out_features=self.latent_dim * self.latent_cls,
+                pdtype=self.pdtype,
+                cdtype=self.cdtype,
+            )
+        }
+        imglayer = []
+        for _ in range(self.imglayers):
+            pass
+
+        obs_key, obslogit_key = random.split(obs_key, num=2)
+        self.obslayers = {
+            "obslogit": Linear(
+                obslogit_key,
+                in_features=self.hidden,
+                out_features=self.latent_dim * self.latent_cls,
+                pdtype=self.pdtype,
+                cdtype=self.cdtype,
+            )
+        }
+        obslayer = []
+        for _ in range(self.obslayers):
+            pass
+
+        dyn_key, dynh_key = random.split(dyn_key, num=2)
+        self.dynlayers = {
+            "dyn_h": BlockLinear(
+                dynh_key,
+                in_features=self.hidden,
+                out_features=3 * self.hidden,
+                num_groups=self.blocks,
+                pdtype=self.pdtype,
+                cdtype=self.cdtype,
+            )
+        }
+        dynlayer = []
+        for _ in range(self.dynlayers):
+            dyn_key, dyn_i_key = random.split(dyn_key, num=2)
+            dynlayer.append(
+                BlockLinear(
+                    dyn_i_key,
+                    in_features=self.hidden,
+                    out_features=self.hidden,
+                    num_groups=self.blocks,
+                    pdtype=self.pdtype,
+                    cdtype=self.cdtype,
+                )
+            )
+        self.dynlayers["dyn_i"] = dynlayer
+        dyn_deter_key, dyn_stoch_key, dyn_action_key = random.split(dyn_key, num=3)
+        self.dynlayers["dyn_in"] = [
+            Linear(key=dyn_deter_key, in_features=self.deter, out_features=self.hidden),
+            Linear(
+                key=dyn_stoch_key,
+                in_features=self.latent_dim * self.latent_cls,
+                out_features=self.hidden,
+            ),
+            Linear(
+                key=dyn_action_key,
+                in_features=self.action_dim,
+                out_features=self.hidden,
+            ),
+        ]
 
     def initial(self, bsize):
         carry = dict(
@@ -51,21 +125,20 @@ class RSSM(eqx.Module):
     def _blockgru(self, deter, stoch, action):
         stoch = stoch.reshape((stoch.shape[0], -1))
         action /= sg(jnp.maximum(1, jnp.abs(action)))
-        g = self.blocks
-        flat2group = lambda x: einops.rearrange(x, "... (g h) -> ... g h", g=g)
-        group2flat = lambda x: einops.rearrange(x, "... g h -> ... (g h)", g=g)
-        #DYNLAYERSOMETHING
-        #
-        #
-        #
-        ##################
+        flat2group = lambda x: einops.rearrange(
+            x, "... (g h) -> ... g h", g=self.blocks
+        )
+        group2flat = lambda x: einops.rearrange(
+            x, "... g h -> ... (g h)", g=self.blocks
+        )
+        x0 = self.dynlayers["dyn_in"][0](deter)
+        x1 = self.dynlayers["dyn_in"][1](stoch)
+        x2 = self.dynlayers["dyn_in"][2](action)
         x = jnp.concatenate([x0, x1, x2], -1)[..., None, :].repeat(g, -2)
         x = group2flat(jnp.concatenate([flat2group(deter), x], -1))
-        #BLOCKLINEARSOMETHING
-        #
-        #
-        #
-        #####################
+        for layer in self.dynlayers["dyn_i"]:
+            x = layer(x)
+        x = self.dynlayers["dyn_h"](x)
         gates = jnp.split(flat2group(x), 3, -1)
         reset, cand, update = [group2flat(x) for x in gates]
         reset = jax.nn.sigmoid(reset)
