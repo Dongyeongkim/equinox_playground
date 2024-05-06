@@ -1,12 +1,305 @@
 import jax
-from utils import *
+import einops
 import numpy as np
 import equinox as eqx
 import jax.numpy as jnp
 from typing import List
+from utils import symlog, symexp, cast_to_compute
+from utils import OneHotDist, MSEDist, HuberDist
+from utils import TransformedMseDist, TwoHotDist
 from tensorflow_probability.substrates import jax as tfp
 
 tfd = tfp.distributions
+sg = lambda x: jax.tree_util.tree_map(jax.lax.stop_gradient, x)
+
+
+class RSSM(eqx.Module):
+    
+    deter: int
+    hidden: int
+    latent_dim: int
+    latent_cls: int
+    
+    norm: str = 'rms'
+    act: str = 'silu'
+    unroll: bool = False
+    unimix: float = 0.01
+    outscale: float = 1.0
+    imglayers: int = 2
+    obslayers: int = 1
+    dynlayers: int = 1
+    absolute: bool = False
+    blocks: int = 8
+    block_fans: bool = False
+    block_norm: bool = False
+    pdtype: str = "float32"
+    cdtype: str = "float32"
+
+    def __init__(self, key, deter, stoch):
+        pass
+
+    def initial(self, bsize):
+        carry = dict(
+            deter=jnp.zeros([bsize, self.deter], "float32"),
+            stoch=jnp.zeros([bsize, self.latent_dim, self.latent_cls], "float32"),
+        )
+        return cast_to_compute(carry, self.cdtype)
+
+    def _prior(self, feat):
+        pass
+
+    def _blockgru(self, deter, stoch, action):
+        stoch = stoch.reshape((stoch.shape[0], -1))
+        action /= sg(jnp.maximum(1, jnp.abs(action)))
+        g = self.blocks
+        flat2group = lambda x: einops.rearrange(x, "... (g h) -> ... g h", g=g)
+        group2flat = lambda x: einops.rearrange(x, "... g h -> ... (g h)", g=g)
+        #DYNLAYERSOMETHING
+        #
+        #
+        #
+        ##################
+        x = jnp.concatenate([x0, x1, x2], -1)[..., None, :].repeat(g, -2)
+        x = group2flat(jnp.concatenate([flat2group(deter), x], -1))
+        #BLOCKLINEARSOMETHING
+        #
+        #
+        #
+        #####################
+        gates = jnp.split(flat2group(x), 3, -1)
+        reset, cand, update = [group2flat(x) for x in gates]
+        reset = jax.nn.sigmoid(reset)
+        cand = jnp.tanh(reset * cand)
+        update = jax.nn.sigmoid(update - 1)
+        deter = update * cand + (1 - update) * deter
+        out = deter
+        return deter, out
+
+
+class ImageEncoder(eqx.Module):
+    _conv_layers: list
+    pdtype: str = "float32"
+    cdtype: str = "float32"
+
+    def __init__(
+        self,
+        key,
+        debug_outer,
+        channel_depth,
+        channel_multipliers,
+        kernel_size,
+        stride,
+        norm="rms",
+        act="silu",
+        minres=4,
+        use_rgb=True,
+        pdtype="float32",
+        cdtype="float32",
+    ):
+
+        channels = (3 if use_rgb else 1,) + tuple(
+            [channel_depth * mult for mult in channel_multipliers]
+        )
+
+        self._conv_layers = []
+        for i in range(len(channel_multipliers)):
+            stride_ = 1 if (debug_outer and (i == 0)) else stride
+            key, param_key = random.split(key, num=2)
+            self._conv_layers.append(
+                Conv2D(
+                    param_key,
+                    in_channels=channels[i],
+                    out_channels=channels[i + 1],
+                    kernel_size=kernel_size,
+                    stride=stride_,
+                    act=act,
+                    norm=norm,
+                    pdtype=pdtype,
+                    cdtype=cdtype,
+                )
+            )
+        self.pdtype = pdtype
+        self.cdtype = cdtype
+
+    def __call__(self, x):
+        x = cast_to_compute(x, self.cdtype)
+        x -= 0.5
+        for layer in self._conv_layers:
+            x = layer(x)
+        x = x.reshape(x.shape[0], -1)
+        return x
+
+
+class ImageDecoder(eqx.Module):
+    _convtr_layers: list
+    _linear_proj: eqx.Module
+    minres: int
+    pdtype: str = "float32"
+    cdtype: str = "float32"
+
+    def __init__(
+        self,
+        key,
+        latent_dim,
+        latent_cls,
+        debug_outer,
+        channel_depth,
+        channel_multipliers,
+        kernel_size,
+        stride,
+        norm="rms",
+        act="silu",
+        minres=4,
+        use_rgb=True,
+        pdtype="float32",
+        cdtype="float32",
+    ):
+        channels = (3 if use_rgb else 1,) + tuple(
+            [channel_depth * mult for mult in channel_multipliers]
+        )
+
+        key, param_key = random.split(key, num=2)
+        self._linear_proj = Linear(
+            param_key,
+            in_features=latent_dim * latent_cls,
+            out_features=(minres**2) * channels[-1],
+            act=act,
+            norm=norm,
+            pdtype=pdtype,
+            cdtype=cdtype,
+        )
+        self._convtr_layers = []
+        for i in reversed(range(1, len(channels))):
+            stride_ = 1 if (debug_outer and (i == 1)) else stride
+            key, param_key = random.split(key, num=2)
+            self._convtr_layers.append(
+                Conv2D(
+                    param_key,
+                    in_channels=channels[i],
+                    out_channels=channels[i - 1],
+                    kernel_size=kernel_size,
+                    stride=stride_,
+                    transpose=True,
+                    act=act,
+                    norm=norm,
+                    pdtype=pdtype,
+                    cdtype=cdtype,
+                )
+            )
+        self.minres = minres
+        self.pdtype = pdtype
+        self.cdtype = cdtype
+
+    def __call__(self, x):
+        x = cast_to_compute(x, self.cdtype)
+        x = self._linear_proj(x)
+        x = x.reshape(x.shape[0], self.minres, self.minres, -1)
+        for layer in self._convtr_layers:
+            x = layer(x)
+        x += 0.5
+        return x
+
+
+class MLP(eqx.Module):
+    layers: list
+    dist: eqx.Module
+    out_shape: bool
+    pdtype: str
+    cdtype: str
+
+    def __init__(
+        self,
+        key,
+        num_layers,
+        in_features,
+        num_units,
+        act,
+        norm,
+        out_shape=None,
+        dist="mse",
+        use_bias=True,
+        outscale=1.0,
+        winit="normal",
+        binit=False,
+        fan="in",
+        fanin=0,
+        pdtype="float32",
+        cdtype="float32",
+    ):
+        self.pdtype = pdtype
+        self.cdtype = cdtype
+
+        main_key = key
+        self.layers = []
+        for i in range(num_layers):
+            main_key, param_key = random.split(main_key, num=2)
+            if i == 0:
+                self.layers.append(
+                    Linear(
+                        param_key,
+                        in_features=in_features,
+                        out_features=num_units,
+                        act=act,
+                        norm=norm,
+                        use_bias=use_bias,
+                        outscale=outscale,
+                        winit=winit,
+                        binit=binit,
+                        fan=fan,
+                        fanin=fanin,
+                        pdtype=self.pdtype,
+                        cdtype=self.cdtype,
+                    )
+                )
+            else:
+                self.layers.append(
+                    Linear(
+                        param_key,
+                        in_features=num_units,
+                        out_features=num_units,
+                        act=act,
+                        norm=norm,
+                        use_bias=use_bias,
+                        outscale=outscale,
+                        pdtype=self.pdtype,
+                        cdtype=self.cdtype,
+                    )
+                )
+        if out_shape is not None:
+            self.dist = Dist(
+                key=main_key,
+                in_features=num_units,
+                out_shape=out_shape,
+                dist=dist,
+                minstd=1.0,
+                maxstd=1.0,
+                unimix=0.0,
+                bins=255,
+                outscale=0.1,
+                use_bias=True,
+                winit="normal",
+                fan="in",
+                fanin=0,
+                pdtype=self.pdtype,
+                cdtype=self.cdtype,
+            )
+            self.out_shape = True
+        else:
+            self.dist = eqx.nn.Identity()
+            self.out_shape = False
+
+    def __call__(self, x):
+        x = cast_to_compute(x, self.cdtype)
+        input_shape = x.shape
+        x = x.reshape([-1, x.shape[-1]])
+        for layer in self.layers:
+            x = layer(x)
+        x = x.reshape((*input_shape[:2], -1))
+        if self.out_shape:
+            x = self.dist(x)
+            return x
+        else:
+            return x
 
 
 class Dist(eqx.Module):
@@ -49,7 +342,7 @@ class Dist(eqx.Module):
         self.out_shape = out_shape if isinstance(out_shape, tuple) else tuple(out_shape)
         self.pdtype = pdtype
         self.cdtype = cdtype
-        
+
         if "normal" in dist:
             mean_key, std_key = random.split(key, num=2)
             self._mean = Linear(
