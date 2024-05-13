@@ -7,6 +7,7 @@ from typing import List
 from utils import symlog, symexp, cast_to_compute
 from utils import OneHotDist, MSEDist, HuberDist
 from utils import TransformedMseDist, TwoHotDist
+from utils import traj_reset
 from tensorflow_probability.substrates import jax as tfp
 
 tfd = tfp.distributions
@@ -25,16 +26,20 @@ class RSSM(eqx.Module):
     latent_dim: int
     latent_cls: int
     action_dim: int
+    channel_mults: int
 
+    minres: int = 4
     norm: str = "rms"
     act: str = "silu"
     unroll: bool = False
     unimix: float = 0.01
     outscale: float = 1.0
-    imglayers: int = 2
-    obslayers: int = 1
-    dynlayers: int = 1
+
+    num_imglayer: int = 2
+    num_obslayer: int = 1
+    num_dynlayer: int = 1
     absolute: bool = False
+
     blocks: int = 8
     block_fans: bool = False
     block_norm: bool = False
@@ -42,9 +47,20 @@ class RSSM(eqx.Module):
     cdtype: str = "float32"
 
     def __init__(self, key, deter, stoch):
-        main_key, img_key, obs_key, dyn_key = random.split(key, num=4)
 
-        img_key, imglogit_key = random.split(img_key, num=2)
+        # parameter key generation
+        #
+
+        self.channel_depth = 32  # just prefix for testing
+        self.channel_mults = (1, 2, 3, 4, 4)  # just prefix for testing
+
+        img_key, obs_key, dyn_key = random.split(key, num=3)
+        img_key, imglogit_key, imginp_key = random.split(img_key, num=3)
+        obs_key, obslogit_key, paraminp_key = random.split(obs_key, num=3)
+        dyn_key, dynh_key, dyn_deter_key, dyn_stoch_key, dyn_action_key = random.split(
+            dyn_key, num=5
+        )
+
         self.imglayers = {
             "imglogit": Linear(
                 imglogit_key,
@@ -52,13 +68,20 @@ class RSSM(eqx.Module):
                 out_features=self.latent_dim * self.latent_cls,
                 pdtype=self.pdtype,
                 cdtype=self.cdtype,
-            )
+            ),
+            "img": [
+                Linear(
+                    imginp_key,
+                    in_features=self.deter,
+                    out_features=self.hidden,
+                    pdtype=self.pdtype,
+                    cdtype=self.cdtype,
+                ),
+            ],
         }
-        imglayer = []
-        for _ in range(self.imglayers):
-            pass
 
-        obs_key, obslogit_key = random.split(obs_key, num=2)
+        self.stack_module(img_key, "imglayers", "img", self.num_imglayer - 1)
+
         self.obslayers = {
             "obslogit": Linear(
                 obslogit_key,
@@ -66,13 +89,21 @@ class RSSM(eqx.Module):
                 out_features=self.latent_dim * self.latent_cls,
                 pdtype=self.pdtype,
                 cdtype=self.cdtype,
-            )
+            ),
+            "obs": [
+                Linear(
+                    paraminp_key,
+                    in_features=self.deter
+                    + (self.minres**2) * self.channel_depth * self.channel_mults[-1],
+                    out_features=self.hidden,
+                    pdtype=self.pdtype,
+                    cdtype=self.cdtype,
+                ),
+            ],
         }
-        obslayer = []
-        for _ in range(self.obslayers):
-            pass
 
-        dyn_key, dynh_key = random.split(dyn_key, num=2)
+        self.stack_module(obs_key, "obslayers", "obs", self.num_obslayer - 1)
+
         self.dynlayers = {
             "dyn_h": BlockLinear(
                 dynh_key,
@@ -81,12 +112,28 @@ class RSSM(eqx.Module):
                 num_groups=self.blocks,
                 pdtype=self.pdtype,
                 cdtype=self.cdtype,
-            )
+            ),
+            "dyn_i": [],
+            "dyn_in": [
+                Linear(
+                    key=dyn_deter_key, in_features=self.deter, out_features=self.hidden
+                ),
+                Linear(
+                    key=dyn_stoch_key,
+                    in_features=self.latent_dim * self.latent_cls,
+                    out_features=self.hidden,
+                ),
+                Linear(
+                    key=dyn_action_key,
+                    in_features=self.action_dim,
+                    out_features=self.hidden,
+                ),
+            ],
         }
-        dynlayer = []
-        for _ in range(self.dynlayers):
+
+        for _ in range(self.num_dynlayer):
             dyn_key, dyn_i_key = random.split(dyn_key, num=2)
-            dynlayer.append(
+            self.dynlayers["dyn_i"].append(
                 BlockLinear(
                     dyn_i_key,
                     in_features=self.hidden,
@@ -96,21 +143,6 @@ class RSSM(eqx.Module):
                     cdtype=self.cdtype,
                 )
             )
-        self.dynlayers["dyn_i"] = dynlayer
-        dyn_deter_key, dyn_stoch_key, dyn_action_key = random.split(dyn_key, num=3)
-        self.dynlayers["dyn_in"] = [
-            Linear(key=dyn_deter_key, in_features=self.deter, out_features=self.hidden),
-            Linear(
-                key=dyn_stoch_key,
-                in_features=self.latent_dim * self.latent_cls,
-                out_features=self.hidden,
-            ),
-            Linear(
-                key=dyn_action_key,
-                in_features=self.action_dim,
-                out_features=self.hidden,
-            ),
-        ]
 
     def initial(self, bsize):
         carry = dict(
@@ -119,8 +151,53 @@ class RSSM(eqx.Module):
         )
         return cast_to_compute(carry, self.cdtype)
 
-    def _prior(self, feat):
+    def observe(self, key, carry, actions, embeds, resets, tdim=1):
         pass
+
+    def imagine(self, key, carry, actions, tdim=1):
+        # input as (B, T, C), calculates in (T, B, C), and output as (B, T, C)
+        carry = jax.tree_util.tree_map(
+            lambda x: x.swapaxes(0, tdim), carry
+        )  # change carry and action swapaxes (B, T, C) -> (T, B, C)
+        actions = actions.swapaxes(
+            0, tdim
+        )  # change carry and action swapaxes (B, T, C) -> (T, B, C)
+
+        carry["key"] = key
+        carry, states = jax.lax.scan(self.img_step(carry, actions))
+        return carry, states
+
+    def obs_step(self, carry, action_embed_reset):
+        action, embed, reset = action_embed_reset
+        carry, action, embed = cast_to_compute((carry, embed, reset))
+        deter, stoch, action = traj_reset((carry["deter"], carry["stoch"], action), reset)
+        pass
+
+
+    def img_step(self, carry, action):
+        key, step_key = random.split(carry["key"], num=2)
+        deter, feat = self._blockgru(carry["deter"], carry["stoch"], action)
+        logit = self._prior(feat)
+        deter_st = cast_to_compute(deter, self.cdtype)
+        stoch_st = cast_to_compute(self._dist(logit).sample(seed=step_key), self.cdtype)
+
+        carry = dict(
+            key=key,
+            deter=deter_st,
+            stoch=stoch_st,
+        )
+        outs = dict(deter=deter_st, stoch=stoch_st, logit=logit)
+        return carry, cast_to_compute(outs, self.cdtype)
+
+    def loss(self, outs, free=1.0):
+        pass
+
+    def _prior(self, feat):
+        x = feat
+        for layer in self.layers["img"]:
+            x = layer(x)
+        x = self.layers["imglogit"](x)
+        return self._logit(x)
 
     def _blockgru(self, deter, stoch, action):
         stoch = stoch.reshape((stoch.shape[0], -1))
@@ -134,7 +211,7 @@ class RSSM(eqx.Module):
         x0 = self.dynlayers["dyn_in"][0](deter)
         x1 = self.dynlayers["dyn_in"][1](stoch)
         x2 = self.dynlayers["dyn_in"][2](action)
-        x = jnp.concatenate([x0, x1, x2], -1)[..., None, :].repeat(g, -2)
+        x = jnp.concatenate([x0, x1, x2], -1)[..., None, :].repeat(self.blocks, -2)
         x = group2flat(jnp.concatenate([flat2group(deter), x], -1))
         for layer in self.dynlayers["dyn_i"]:
             x = layer(x)
@@ -147,6 +224,33 @@ class RSSM(eqx.Module):
         deter = update * cand + (1 - update) * deter
         out = deter
         return deter, out
+
+    def _logit(self, x):
+        logit = x.reshape(x.shape[:-1] + (self.latent_dim, self.latent_cls))
+        if self.unimix:
+            probs = jax.nn.softmax(logit, -1)
+            uniform = jnp.ones_like(probs) / probs.shape[-1]
+            probs = (1 - self.unimix) * probs + self.unimix * uniform
+            logit = jnp.log(probs)
+        return logit
+
+    def _dist(self, logit):
+        return tfd.Independent(OneHotDist(logit.astype("float32")), 1)
+
+    def stack_module(self, key, module_name, submodule_name, num):
+        layer = []
+        for _ in range(num):
+            key, param_key = random.split(key, num=2)
+            layer.append(
+                Linear(
+                    param_key,
+                    in_features=self.hidden,
+                    out_features=self.hidden,
+                    pdtype=self.pdtype,
+                    cdtype=self.cdtype,
+                )
+            )
+        getattr(self, module_name)[submodule_name].extend(layer)
 
 
 class ImageEncoder(eqx.Module):

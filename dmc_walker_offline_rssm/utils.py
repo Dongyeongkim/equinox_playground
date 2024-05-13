@@ -21,6 +21,18 @@ def symexp(x):
     return jnp.sign(x) * (jnp.exp(jnp.abs(x)) - 1)
 
 
+
+# reset
+
+def traj_reset(xs, reset):
+    def fn(x):
+        mask = reset
+        while len(mask.shape) < len(x.shape):
+            mask = mask[..., None]
+            return x * (1 - mask.astype(x.dtype))
+        return jax.tree_util.treemap(fn, xs)
+
+
 # computing function
 
 
