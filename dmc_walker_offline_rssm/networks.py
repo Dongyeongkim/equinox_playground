@@ -26,19 +26,18 @@ class RSSM(eqx.Module):
     latent_dim: int
     latent_cls: int
     action_dim: int
-    channel_mults: int
+    channel_depth: int
+    channel_mults: tuple
 
     minres: int = 4
     norm: str = "rms"
     act: str = "silu"
-    unroll: bool = False
     unimix: float = 0.01
     outscale: float = 1.0
 
     num_imglayer: int = 2
     num_obslayer: int = 1
     num_dynlayer: int = 1
-    absolute: bool = False
 
     blocks: int = 8
     block_fans: bool = False
@@ -46,13 +45,65 @@ class RSSM(eqx.Module):
     pdtype: str = "float32"
     cdtype: str = "float32"
 
-    def __init__(self, key, deter, stoch):
+    def __init__(self, 
+                 key, 
+                 deter,
+                 hidden,
+                 latent_dim,
+                 latent_cls,
+                 channel_depth,
+                 channel_mults,
+                 minres=4,
+                 norm="rms",
+                 act="silu",
+                 unimix=0.01,
+                 outscale=1.0,
+                 num_imglayer=2,
+                 num_obslayer=1,
+                 num_dynlayer=1,
+                 blocks=8,
+                 block_fans=False,
+                 block_norm=False,
+                 pdtype="float32",
+                 cdtype="float32",
+                 ):
+
+
+        # Basic hyperparameters (architecture)
+
+        self.deter = deter
+        self.hidden = hidden
+        self.latent_dim = latent_dim
+        self.latent_cls = latent_cls
+        self.channel_depth = channel_depth
+        self.channel_mults = channel_mults
+
+        # dynamics predictor(img), encoder(obs - except CNN), BlockGRU(dyn) hyperparameters
+
+        self.num_imglayer = num_imglayer
+        self.num_obslayer = num_obslayer
+        self.num_dynlayer = num_dynlayer
+
+        # minres, normalisation, activation 
+
+        self.minres = minres
+        self.norm = norm
+        self.act = act
+        self.unimix= unimix
+        self.outscale= outscale
+
+        # block gru hyperparameters
+
+        self.blocks = blocks
+        self.block_fans = block_fans
+        self.block_norm = block_norm
+
+        # parameter dtype and compute dtype
+
+        self.pdtype = pdtype
+        self.cdtype = cdtype
 
         # parameter key generation
-        #
-
-        self.channel_depth = 32  # just prefix for testing
-        self.channel_mults = (1, 2, 3, 4, 4)  # just prefix for testing
 
         img_key, obs_key, dyn_key = random.split(key, num=3)
         img_key, imglogit_key, imginp_key = random.split(img_key, num=3)
@@ -152,9 +203,27 @@ class RSSM(eqx.Module):
         return cast_to_compute(carry, self.cdtype)
 
     def observe(self, key, carry, actions, embeds, resets, tdim=1):
-        pass
+        
+        # input as (B, T, C), calculates in (T, B, C), and output as (B, T, C)
+        carry = jax.tree_util.tree_map(
+            lambda x: x.swapaxes(0, tdim), carry
+        )  # change carry and action swapaxes (B, T, C) -> (T, B, C)
+        actions = actions.swapaxes(
+            0, tdim
+        )  # change carry and action swapaxes (B, T, C) -> (T, B, C)
+        embeds = embeds.swapaxes(
+            0, tdim
+        )  # change carry and action swapaxes (B, T, C) -> (T, B, C)
+        resets = resets.swapaxes(
+            0, tdim
+        )  # change carry and action swapaxes (B, T, C) -> (T, B, C)
+
+        carry["key"] = key
+        carry, outs = jax.lax.scan(self.obs_step(carry, (actions, embeds, resets)))
+        return carry, outs
 
     def imagine(self, key, carry, actions, tdim=1):
+
         # input as (B, T, C), calculates in (T, B, C), and output as (B, T, C)
         carry = jax.tree_util.tree_map(
             lambda x: x.swapaxes(0, tdim), carry
@@ -168,11 +237,35 @@ class RSSM(eqx.Module):
         return carry, states
 
     def obs_step(self, carry, action_embed_reset):
+        key, step_key = random.split(carry["key"], num=2)
         action, embed, reset = action_embed_reset
         carry, action, embed = cast_to_compute((carry, embed, reset))
-        deter, stoch, action = traj_reset((carry["deter"], carry["stoch"], action), reset)
-        pass
+        deter, stoch, action = traj_reset(
+            (carry["deter"], carry["stoch"], action), reset
+        )
 
+        deter, feat = self._blockgru(deter, stoch, action)
+        prior = self._prior(feat)
+        priorlogit = self._logit(prior)
+        priorlogit = cast_to_compute(priorlogit, self.cdtype)
+
+        post = jnp.concatenate([feat, embed], -1)
+        for layer in self.obslayers["obs"]:
+            post = layer(post)
+        post = self.obslayers["obslogit"](post)
+        postlogit = self._logit(post)
+        postlogit = cast_to_compute(postlogit, self.cdtype)
+
+        deterst = cast_to_compute(deter, self.cdtype)
+        stochst = cast_to_compute(self._dist(post).sample(seed=step_key), self.cdtype)
+        carry = dict(
+            key=key,
+            deter=deterst,
+            stoch=stochst,
+        )
+        outs = dict(deter=deterst, stoch=stochst, prior=priorlogit, post=postlogit)
+
+        return carry, outs
 
     def img_step(self, carry, action):
         key, step_key = random.split(carry["key"], num=2)
@@ -194,9 +287,9 @@ class RSSM(eqx.Module):
 
     def _prior(self, feat):
         x = feat
-        for layer in self.layers["img"]:
+        for layer in self.imglayers["img"]:
             x = layer(x)
-        x = self.layers["imglogit"](x)
+        x = self.imglayers["imglogit"](x)
         return self._logit(x)
 
     def _blockgru(self, deter, stoch, action):
