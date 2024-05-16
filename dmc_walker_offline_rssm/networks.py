@@ -300,7 +300,9 @@ class RSSM(eqx.Module):
         postlogit = cast_to_compute(postlogit, self.cdtype)
 
         deterst = cast_to_compute(deter, self.cdtype)
-        stochst = cast_to_compute(self._dist(postlogit).sample(seed=step_key), self.cdtype)
+        stochst = cast_to_compute(
+            self._dist(postlogit).sample(seed=step_key), self.cdtype
+        )
         carry = dict(
             key=key,
             deter=deterst,
@@ -332,7 +334,9 @@ class RSSM(eqx.Module):
         if free:
             dyn = jnp.maximum(dyn, free)
             rep = jnp.maximum(rep, free)
-        metrics.update(tensorstats(key, self._dist(outs["prior"]).entropy(), "prior_ent"))
+        metrics.update(
+            tensorstats(key, self._dist(outs["prior"]).entropy(), "prior_ent")
+        )
         metrics.update(tensorstats(key, self._dist(outs["post"]).entropy(), "post_ent"))
         return {"dyn": dyn, "rep": rep}, metrics
 

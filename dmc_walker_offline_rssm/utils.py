@@ -21,8 +21,8 @@ def symexp(x):
     return jnp.sign(x) * (jnp.exp(jnp.abs(x)) - 1)
 
 
-
 # reset
+
 
 def traj_reset(xs, reset):
     def fn(x):
@@ -30,6 +30,7 @@ def traj_reset(xs, reset):
         while len(mask.shape) < len(x.shape):
             mask = mask[..., None]
         return x * (1 - mask.astype(x.dtype))
+
     return jax.tree_util.tree_map(fn, xs)
 
 
@@ -44,21 +45,22 @@ def cast_to_compute(values, compute_dtype):
 
 # tensor stats
 
+
 def tensorstats(key, tensor, prefix=None):
     assert tensor.size > 0, tensor.shape
     assert jnp.issubdtype(tensor.dtype, jnp.floating), tensor.dtype
     tensor = tensor.astype("float32")  # To avoid overflows.
     metrics = {
-        'mean': tensor.mean(),
-        'std': tensor.std(),
-        'mag': jnp.abs(tensor).mean(),
-        'min': tensor.min(),
-        'max': tensor.max(),
-        'dist': subsample(key, tensor),
-        }
+        "mean": tensor.mean(),
+        "std": tensor.std(),
+        "mag": jnp.abs(tensor).mean(),
+        "min": tensor.min(),
+        "max": tensor.max(),
+        "dist": subsample(key, tensor),
+    }
     if prefix:
-        metrics = {f'{prefix}/{k}': v for k, v in metrics.items()}
-    
+        metrics = {f"{prefix}/{k}": v for k, v in metrics.items()}
+
     return metrics
 
 
