@@ -7,7 +7,7 @@ from typing import List
 from utils import symlog, symexp, cast_to_compute
 from utils import OneHotDist, MSEDist, HuberDist
 from utils import TransformedMseDist, TwoHotDist
-from utils import traj_reset
+from utils import traj_reset, tensorstats
 from tensorflow_probability.substrates import jax as tfp
 
 tfd = tfp.distributions
@@ -225,8 +225,8 @@ class RSSM(eqx.Module):
 
     def initial(self, bsize):
         carry = dict(
-            deter=jnp.zeros([bsize, self.deter], "float32"),
-            stoch=jnp.zeros([bsize, self.latent_dim, self.latent_cls], "float32"),
+            deter=jnp.zeros([bsize, self.deter], self.pdtype),
+            stoch=jnp.zeros([bsize, self.latent_dim, self.latent_cls], self.pdtype),
         )
         return cast_to_compute(carry, self.cdtype)
 
@@ -311,7 +311,15 @@ class RSSM(eqx.Module):
         return carry, cast_to_compute(outs, self.cdtype)
 
     def loss(self, outs, free=1.0):
-        pass
+        metrics = {}
+        dyn = self._dist(sg(outs["post"])).kl_divergence(self._dist(outs["prior"]))
+        rep = self._dist(outs["post"]).kl_divergence(self._dist(sg(outs["prior"])))
+        if free:
+            dyn = jnp.maximum(dyn, free)
+            rep = jnp.maximum(rep, free)
+        metrics.update(tensorstats(self._dist(outs["prior"]).entropy(), 'prior_ent'))
+        metrics.update(tensorstats(self._dist(outs["post"]).entropy(), 'post_ent'))
+        return {'dyn': dyn, 'rep': rep}, metrics
 
     def _prior(self, feat):
         x = feat

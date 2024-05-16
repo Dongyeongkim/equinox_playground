@@ -42,6 +42,33 @@ def cast_to_compute(values, compute_dtype):
     )
 
 
+# tensor stats
+
+def tensorstats(tensor, prefix=None):
+    assert tensor.size > 0, tensor.shape
+    assert jnp.issubdtype(tensor.dtype, jnp.floating), tensor.dtype
+    tensor = tensor.astype("float32")  # To avoid overflows.
+    metrics = {
+        'mean': tensor.mean(),
+        'std': tensor.std(),
+        'mag': jnp.abs(tensor).mean(),
+        'min': tensor.min(),
+        'max': tensor.max(),
+        'dist': subsample(tensor),
+        }
+    if prefix:
+        metrics = {f'{prefix}/{k}': v for k, v in metrics.items()}
+    
+    return metrics
+
+
+def subsample(values, amount=1024):
+    values = values.flatten()
+    if len(values) > amount:
+        values = jax.random.permutation(nj.seed(), values)[:amount]
+    return values
+
+
 # adaptive_gradient_clip for equinox
 
 AdaptiveGradClipState = base.EmptyState
