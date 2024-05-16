@@ -44,7 +44,7 @@ def cast_to_compute(values, compute_dtype):
 
 # tensor stats
 
-def tensorstats(tensor, prefix=None):
+def tensorstats(key, tensor, prefix=None):
     assert tensor.size > 0, tensor.shape
     assert jnp.issubdtype(tensor.dtype, jnp.floating), tensor.dtype
     tensor = tensor.astype("float32")  # To avoid overflows.
@@ -54,7 +54,7 @@ def tensorstats(tensor, prefix=None):
         'mag': jnp.abs(tensor).mean(),
         'min': tensor.min(),
         'max': tensor.max(),
-        'dist': subsample(tensor),
+        'dist': subsample(key, tensor),
         }
     if prefix:
         metrics = {f'{prefix}/{k}': v for k, v in metrics.items()}
@@ -62,10 +62,10 @@ def tensorstats(tensor, prefix=None):
     return metrics
 
 
-def subsample(values, amount=1024):
+def subsample(key, values, amount=1024):
     values = values.flatten()
     if len(values) > amount:
-        values = jax.random.permutation(nj.seed(), values)[:amount]
+        values = jax.random.permutation(key, values)[:amount]
     return values
 
 

@@ -325,15 +325,15 @@ class RSSM(eqx.Module):
         outs = dict(deter=deter_st, stoch=stoch_st, logit=logit)
         return carry, cast_to_compute(outs, self.cdtype)
 
-    def loss(self, outs, free=1.0):
+    def loss(self, key, outs, free=1.0):
         metrics = {}
         dyn = self._dist(sg(outs["post"])).kl_divergence(self._dist(outs["prior"]))
         rep = self._dist(outs["post"]).kl_divergence(self._dist(sg(outs["prior"])))
         if free:
             dyn = jnp.maximum(dyn, free)
             rep = jnp.maximum(rep, free)
-        metrics.update(tensorstats(self._dist(outs["prior"]).entropy(), "prior_ent"))
-        metrics.update(tensorstats(self._dist(outs["post"]).entropy(), "post_ent"))
+        metrics.update(tensorstats(key, self._dist(outs["prior"]).entropy(), "prior_ent"))
+        metrics.update(tensorstats(key, self._dist(outs["post"]).entropy(), "post_ent"))
         return {"dyn": dyn, "rep": rep}, metrics
 
     def _prior(self, feat):
