@@ -29,8 +29,8 @@ def traj_reset(xs, reset):
         mask = reset
         while len(mask.shape) < len(x.shape):
             mask = mask[..., None]
-            return x * (1 - mask.astype(x.dtype))
-        return jax.tree_util.treemap(fn, xs)
+        return x * (1 - mask.astype(x.dtype))
+    return jax.tree_util.tree_map(fn, xs)
 
 
 # computing function

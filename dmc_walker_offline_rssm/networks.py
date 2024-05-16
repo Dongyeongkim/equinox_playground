@@ -109,8 +109,8 @@ class RSSM(eqx.Module):
         img_key, obs_key, dyn_key = random.split(key, num=3)
         img_key, imglogit_key, imginp_key = random.split(img_key, num=3)
         obs_key, obslogit_key, paraminp_key = random.split(obs_key, num=3)
-        dyn_key, dynh_key, dyn_deter_key, dyn_stoch_key, dyn_action_key = random.split(
-            dyn_key, num=5
+        dyn_key, dyn_i1_key, dynh_key, dyn_deter_key, dyn_stoch_key, dyn_action_key = (
+            random.split(dyn_key, num=6)
         )
 
         self.imglayers = {
@@ -172,12 +172,23 @@ class RSSM(eqx.Module):
             "dyn_h": BlockLinear(
                 dynh_key,
                 in_features=self.hidden,
-                out_features=3 * self.hidden,
+                out_features=3 * self.deter,
                 num_groups=self.blocks,
                 pdtype=self.pdtype,
                 cdtype=self.cdtype,
             ),
-            "dyn_i": [],
+            "dyn_i": [
+                BlockLinear(
+                    dyn_i1_key,
+                    in_features=3 * self.blocks * self.hidden + self.deter,
+                    out_features=self.hidden,
+                    num_groups=self.blocks,
+                    act=self.act,
+                    norm=self.norm,
+                    pdtype=self.pdtype,
+                    cdtype=self.cdtype,
+                )
+            ],
             "dyn_in1": Linear(
                 key=dyn_deter_key,
                 in_features=self.deter,
@@ -207,7 +218,7 @@ class RSSM(eqx.Module):
             ),
         }
 
-        for _ in range(self.num_dynlayer):
+        for _ in range(self.num_dynlayer - 1):
             dyn_key, dyn_i_key = random.split(dyn_key, num=2)
             self.dynlayers["dyn_i"].append(
                 BlockLinear(
@@ -240,10 +251,14 @@ class RSSM(eqx.Module):
         )  # change carry and action swapaxes (B, T, C) -> (T, B, C)
         resets = resets.swapaxes(
             0, tdim
-        )  # change carry and action swapaxes (B, T, C) -> (T, B, C)
+        )  # change carry and action swapaxes (B, T) -> (T, B)
 
         carry["key"] = key
-        carry, outs = jax.lax.scan(f=self.obs_step, init=carry, xs=(actions, embeds, resets))
+        carry, outs = jax.lax.scan(
+            f=lambda *a, **kw: self.obs_step(*a, **kw),
+            init=carry,
+            xs=(actions, embeds, resets),
+        )  # https://github.com/patrick-kidger/equinox/issues/558
         return carry, outs
 
     def imagine(self, key, carry, actions, tdim=1):
@@ -255,20 +270,26 @@ class RSSM(eqx.Module):
         actions = cast_to_compute(actions, self.cdtype)
 
         carry["key"] = key
-        carry, states = jax.lax.scan(f=self.img_step, init=carry, xs=actions)
+        carry, states = jax.lax.scan(
+            f=lambda *a, **kw: self.img_step(*a, **kw), init=carry, xs=actions
+        )  # https://github.com/patrick-kidger/equinox/issues/558
         return carry, states
 
     def obs_step(self, carry, action_embed_reset):
         key, step_key = random.split(carry["key"], num=2)
         action, embed, reset = action_embed_reset
-        carry, action, embed = cast_to_compute((carry, embed, reset))
+        action, embed, reset = cast_to_compute((action, embed, reset), self.cdtype)
         deter, stoch, action = traj_reset(
-            (carry["deter"], carry["stoch"], action), reset
+            (
+                cast_to_compute(carry["deter"], self.cdtype),
+                cast_to_compute(carry["stoch"], self.cdtype),
+                action,
+            ),
+            reset,
         )
 
         deter, feat = self._blockgru(deter, stoch, action)
-        prior = self._prior(feat)
-        priorlogit = self._logit(prior)
+        priorlogit = self._prior(feat)
         priorlogit = cast_to_compute(priorlogit, self.cdtype)
 
         post = jnp.concatenate([feat, embed], -1)
@@ -279,7 +300,7 @@ class RSSM(eqx.Module):
         postlogit = cast_to_compute(postlogit, self.cdtype)
 
         deterst = cast_to_compute(deter, self.cdtype)
-        stochst = cast_to_compute(self._dist(post).sample(seed=step_key), self.cdtype)
+        stochst = cast_to_compute(self._dist(postlogit).sample(seed=step_key), self.cdtype)
         carry = dict(
             key=key,
             deter=deterst,
