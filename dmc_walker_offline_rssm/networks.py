@@ -45,29 +45,29 @@ class RSSM(eqx.Module):
     pdtype: str = "float32"
     cdtype: str = "float32"
 
-    def __init__(self, 
-                 key, 
-                 deter,
-                 hidden,
-                 latent_dim,
-                 latent_cls,
-                 channel_depth,
-                 channel_mults,
-                 minres=4,
-                 norm="rms",
-                 act="silu",
-                 unimix=0.01,
-                 outscale=1.0,
-                 num_imglayer=2,
-                 num_obslayer=1,
-                 num_dynlayer=1,
-                 blocks=8,
-                 block_fans=False,
-                 block_norm=False,
-                 pdtype="float32",
-                 cdtype="float32",
-                 ):
-
+    def __init__(
+        self,
+        key,
+        deter,
+        hidden,
+        latent_dim,
+        latent_cls,
+        channel_depth,
+        channel_mults,
+        minres=4,
+        norm="rms",
+        act="silu",
+        unimix=0.01,
+        outscale=1.0,
+        num_imglayer=2,
+        num_obslayer=1,
+        num_dynlayer=1,
+        blocks=8,
+        block_fans=False,
+        block_norm=False,
+        pdtype="float32",
+        cdtype="float32",
+    ):
 
         # Basic hyperparameters (architecture)
 
@@ -84,13 +84,13 @@ class RSSM(eqx.Module):
         self.num_obslayer = num_obslayer
         self.num_dynlayer = num_dynlayer
 
-        # minres, normalisation, activation 
+        # minres, normalisation, activation
 
         self.minres = minres
         self.norm = norm
         self.act = act
-        self.unimix= unimix
-        self.outscale= outscale
+        self.unimix = unimix
+        self.outscale = outscale
 
         # block gru hyperparameters
 
@@ -179,8 +179,8 @@ class RSSM(eqx.Module):
             "dyn_i": [],
             "dyn_in": [
                 Linear(
-                    key=dyn_deter_key, 
-                    in_features=self.deter, 
+                    key=dyn_deter_key,
+                    in_features=self.deter,
                     out_features=self.hidden,
                     act=self.act,
                     norm=self.norm,
@@ -231,7 +231,7 @@ class RSSM(eqx.Module):
         return cast_to_compute(carry, self.cdtype)
 
     def observe(self, key, carry, actions, embeds, resets, tdim=1):
-        
+
         # input as (B, T, C), calculates in (T, B, C), and output as (B, T, C)
         carry = jax.tree_util.tree_map(
             lambda x: x.swapaxes(0, tdim), carry
@@ -317,9 +317,9 @@ class RSSM(eqx.Module):
         if free:
             dyn = jnp.maximum(dyn, free)
             rep = jnp.maximum(rep, free)
-        metrics.update(tensorstats(self._dist(outs["prior"]).entropy(), 'prior_ent'))
-        metrics.update(tensorstats(self._dist(outs["post"]).entropy(), 'post_ent'))
-        return {'dyn': dyn, 'rep': rep}, metrics
+        metrics.update(tensorstats(self._dist(outs["prior"]).entropy(), "prior_ent"))
+        metrics.update(tensorstats(self._dist(outs["post"]).entropy(), "post_ent"))
+        return {"dyn": dyn, "rep": rep}, metrics
 
     def _prior(self, feat):
         x = feat
@@ -480,20 +480,35 @@ class ImageDecoder(eqx.Module):
         for i in reversed(range(1, len(channels))):
             stride_ = 1 if (debug_outer and (i == 1)) else stride
             key, param_key = random.split(key, num=2)
-            self._convtr_layers.append(
-                Conv2D(
-                    param_key,
-                    in_channels=channels[i],
-                    out_channels=channels[i - 1],
-                    kernel_size=kernel_size,
-                    stride=stride_,
-                    transpose=True,
-                    act=act,
-                    norm=norm,
-                    pdtype=pdtype,
-                    cdtype=cdtype,
+            if i == len(channels) - 1:
+                self._convtr_layers.append(
+                    Conv2D(
+                        param_key,
+                        in_channels=channels[i],
+                        out_channels=channels[i - 1],
+                        kernel_size=kernel_size,
+                        stride=stride_,
+                        transpose=True,
+                        norm=norm,
+                        pdtype=pdtype,
+                        cdtype=cdtype,
+                    )
                 )
-            )
+            else:
+                self._convtr_layers.append(
+                    Conv2D(
+                        param_key,
+                        in_channels=channels[i],
+                        out_channels=channels[i - 1],
+                        kernel_size=kernel_size,
+                        stride=stride_,
+                        transpose=True,
+                        act=act,
+                        norm=norm,
+                        pdtype=pdtype,
+                        cdtype=cdtype,
+                    )
+                )
         self.minres = minres
         self.pdtype = pdtype
         self.cdtype = cdtype
