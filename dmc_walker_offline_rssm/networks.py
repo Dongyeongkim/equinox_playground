@@ -2,6 +2,7 @@ import jax
 import einops
 import numpy as np
 import equinox as eqx
+from jax import random
 import jax.numpy as jnp
 from typing import List
 from utils import symlog, symexp, cast_to_compute
@@ -15,8 +16,6 @@ sg = lambda x: jax.tree_util.tree_map(jax.lax.stop_gradient, x)
 
 
 class RSSM(eqx.Module):
-    imglogit: eqx.Module
-    obslogit: eqx.Module
     dynlayers: dict
     imglayers: dict
     obslayers: dict
@@ -50,6 +49,7 @@ class RSSM(eqx.Module):
         key,
         deter,
         hidden,
+        action_dim,
         latent_dim,
         latent_cls,
         channel_depth,
@@ -73,6 +73,7 @@ class RSSM(eqx.Module):
 
         self.deter = deter
         self.hidden = hidden
+        self.action_dim = action_dim
         self.latent_dim = latent_dim
         self.latent_cls = latent_cls
         self.channel_depth = channel_depth
@@ -177,35 +178,33 @@ class RSSM(eqx.Module):
                 cdtype=self.cdtype,
             ),
             "dyn_i": [],
-            "dyn_in": [
-                Linear(
-                    key=dyn_deter_key,
-                    in_features=self.deter,
-                    out_features=self.hidden,
-                    act=self.act,
-                    norm=self.norm,
-                    pdtype=self.pdtype,
-                    cdtype=self.cdtype,
-                ),
-                Linear(
-                    key=dyn_stoch_key,
-                    in_features=self.latent_dim * self.latent_cls,
-                    out_features=self.hidden,
-                    act=self.act,
-                    norm=self.norm,
-                    pdtype=self.pdtype,
-                    cdtype=self.cdtype,
-                ),
-                Linear(
-                    key=dyn_action_key,
-                    in_features=self.action_dim,
-                    out_features=self.hidden,
-                    act=self.act,
-                    norm=self.norm,
-                    pdtype=self.pdtype,
-                    cdtype=self.cdtype,
-                ),
-            ],
+            "dyn_in1": Linear(
+                key=dyn_deter_key,
+                in_features=self.deter,
+                out_features=self.hidden,
+                act=self.act,
+                norm=self.norm,
+                pdtype=self.pdtype,
+                cdtype=self.cdtype,
+            ),
+            "dyn_in2": Linear(
+                key=dyn_stoch_key,
+                in_features=self.latent_dim * self.latent_cls,
+                out_features=self.hidden,
+                act=self.act,
+                norm=self.norm,
+                pdtype=self.pdtype,
+                cdtype=self.cdtype,
+            ),
+            "dyn_in3": Linear(
+                key=dyn_action_key,
+                in_features=self.action_dim,
+                out_features=self.hidden,
+                act=self.act,
+                norm=self.norm,
+                pdtype=self.pdtype,
+                cdtype=self.cdtype,
+            ),
         }
 
         for _ in range(self.num_dynlayer):
@@ -233,9 +232,6 @@ class RSSM(eqx.Module):
     def observe(self, key, carry, actions, embeds, resets, tdim=1):
 
         # input as (B, T, C), calculates in (T, B, C), and output as (B, T, C)
-        carry = jax.tree_util.tree_map(
-            lambda x: x.swapaxes(0, tdim), carry
-        )  # change carry and action swapaxes (B, T, C) -> (T, B, C)
         actions = actions.swapaxes(
             0, tdim
         )  # change carry and action swapaxes (B, T, C) -> (T, B, C)
@@ -247,21 +243,19 @@ class RSSM(eqx.Module):
         )  # change carry and action swapaxes (B, T, C) -> (T, B, C)
 
         carry["key"] = key
-        carry, outs = jax.lax.scan(self.obs_step(carry, (actions, embeds, resets)))
+        carry, outs = jax.lax.scan(f=self.obs_step, init=carry, xs=(actions, embeds, resets))
         return carry, outs
 
     def imagine(self, key, carry, actions, tdim=1):
-
         # input as (B, T, C), calculates in (T, B, C), and output as (B, T, C)
-        carry = jax.tree_util.tree_map(
-            lambda x: x.swapaxes(0, tdim), carry
-        )  # change carry and action swapaxes (B, T, C) -> (T, B, C)
         actions = actions.swapaxes(
             0, tdim
         )  # change carry and action swapaxes (B, T, C) -> (T, B, C)
+        carry = cast_to_compute(carry, self.cdtype)
+        actions = cast_to_compute(actions, self.cdtype)
 
         carry["key"] = key
-        carry, states = jax.lax.scan(self.img_step(carry, actions))
+        carry, states = jax.lax.scan(f=self.img_step, init=carry, xs=actions)
         return carry, states
 
     def obs_step(self, carry, action_embed_reset):
@@ -337,9 +331,9 @@ class RSSM(eqx.Module):
         group2flat = lambda x: einops.rearrange(
             x, "... g h -> ... (g h)", g=self.blocks
         )
-        x0 = self.dynlayers["dyn_in"][0](deter)
-        x1 = self.dynlayers["dyn_in"][1](stoch)
-        x2 = self.dynlayers["dyn_in"][2](action)
+        x0 = self.dynlayers["dyn_in1"](deter)
+        x1 = self.dynlayers["dyn_in2"](stoch)
+        x2 = self.dynlayers["dyn_in3"](action)
         x = jnp.concatenate([x0, x1, x2], -1)[..., None, :].repeat(self.blocks, -2)
         x = group2flat(jnp.concatenate([flat2group(deter), x], -1))
         for layer in self.dynlayers["dyn_i"]:
@@ -1273,127 +1267,3 @@ def get_act(name):
         return getattr(jax.nn, name)
     else:
         raise NotImplementedError(name)
-
-
-if __name__ == "__main__":
-    import optax
-    from jax import random
-
-    """
-    norm_module = Norm(num_features=32, impl="rms")
-    random_x_array = random.normal(
-        random.key(0), shape=(16, 64, 32, 32), dtype="bfloat16"
-    )
-    random_y_array = random.bernoulli(random.key(0), shape=(16, 64, 32, 32)).astype(
-        "bfloat16"
-    )
-    print(norm_module)
-    print(random_x_array.shape)
-    print(norm_module(random_x_array).dtype)
-
-    def loss(model, x, y):
-        return jnp.mean((jax.vmap(model)(x) - y) ** 2)
-
-    optim = optax.rmsprop(learning_rate=4e-5)
-    opt_state = optim.init(eqx.filter(norm_module, eqx.is_array))
-    print(opt_state)
-
-    @eqx.filter_jit
-    def make_step(loss_fn, model, opt_state, inputs, label):
-        value, grads = eqx.filter_value_and_grad(loss_fn)(model, inputs, label)
-        updates, opt_state = optim.update(grads, opt_state, model)
-        model = eqx.apply_updates(model, updates)
-        return model, opt_state, value
-
-    model_scale = 0
-    import time
-
-    N = 10000
-    a = time.time()
-    for i in range(N):
-        norm_module, opt_state, value = make_step(
-            loss, norm_module, opt_state, random_x_array, random_y_array
-        )
-        model_scale = jnp.sum(model_scale - norm_module.scale)
-        # print(model_scale)
-        model_scale = norm_module.scale
-    print((time.time() - a) / N)
-    """
-
-    CDTYPE = "bfloat16"
-
-    linear_module = Linear(
-        jax.random.key(0),
-        in_features=1536,
-        out_features=12288,
-        act="sigmoid",
-        norm="rms",
-        cdtype=CDTYPE,
-    )
-    blocklinear_module = BlockLinear(
-        jax.random.key(0),
-        in_features=1536,
-        out_features=12288,
-        num_groups=8,
-        act="sigmoid",
-        norm="rms",
-        block_fans=False,
-        block_norm=False,
-        cdtype=CDTYPE,
-    )
-    random_x_array = random.normal(random.key(0), shape=(16, 64, 1536), dtype=CDTYPE)
-    random_y_array = random.bernoulli(random.key(0), shape=(16, 64, 12288)).astype(
-        CDTYPE
-    )
-
-    print("starting on linear")
-    print(linear_module)
-    print(random_x_array.shape)
-    print(linear_module(random_x_array).dtype)
-
-    def loss(model, x, y):
-        return jnp.mean((jax.vmap(model)(x) - y) ** 2)
-
-    optim = optax.rmsprop(learning_rate=4e-5)
-    opt_state = optim.init(eqx.filter(linear_module, eqx.is_array))
-    print(opt_state)
-
-    @eqx.filter_jit
-    def make_step(loss_fn, model, opt_state, inputs, label):
-        value, grads = eqx.filter_value_and_grad(loss_fn)(model, inputs, label)
-        updates, opt_state = optim.update(grads, opt_state, model)
-        model = eqx.apply_updates(model, updates)
-        return model, opt_state, value
-
-    model_scale = 0
-    import time
-
-    N = 10000
-    a = time.time()
-    for i in range(N):
-        linear_module, opt_state, value = make_step(
-            loss, linear_module, opt_state, random_x_array, random_y_array
-        )
-        # print(value)
-    print((time.time() - a) / N)
-
-    print("sleeping...")
-    time.sleep(5)
-    print("starting on blocklinear")
-
-    print(blocklinear_module)
-    print(random_x_array.shape)
-    print(blocklinear_module(random_x_array).dtype)
-
-    optim = optax.rmsprop(learning_rate=4e-5)
-    opt_state = optim.init(eqx.filter(blocklinear_module, eqx.is_array))
-    print(opt_state)
-
-    N = 10000
-    a = time.time()
-    for i in range(N):
-        blocklinear_module, opt_state, value = make_step(
-            loss, blocklinear_module, opt_state, random_x_array, random_y_array
-        )
-        # print(value)
-    print((time.time() - a) / N)
