@@ -848,7 +848,7 @@ class Dist(eqx.Module):
 
 
 class Conv2D(eqx.Module):
-    kernel: jax.Array
+    weight: jax.Array
     bias: jax.Array
     _norm: eqx.Module
     stride: int
@@ -902,7 +902,7 @@ class Conv2D(eqx.Module):
         wkey, bkey = jax.random.split(key, num=2)
         self.stride = stride
         self.num_groups = groups
-        self.kernel = Initializer(dist=winit, scale=outscale, mode=fan)(
+        self.weight = Initializer(dist=winit, scale=outscale, mode=fan)(
             wkey,
             (kernel_size, kernel_size, in_channels, out_channels),
             None,
@@ -937,7 +937,7 @@ class Conv2D(eqx.Module):
         if self.transposed:
             x = jax.lax.conv_transpose(
                 x,
-                self.kernel.astype(self.cdtype),
+                self.weight.astype(self.cdtype),
                 (self.stride, self.stride),
                 self.pad.upper(),
                 dimension_numbers=("NHWC", "HWIO", "NHWC"),
@@ -945,7 +945,7 @@ class Conv2D(eqx.Module):
         else:
             x = jax.lax.conv_general_dilated(
                 x,
-                self.kernel.astype(self.cdtype),
+                self.weight.astype(self.cdtype),
                 (self.stride, self.stride),
                 self.pad.upper(),
                 feature_group_count=self.num_groups,

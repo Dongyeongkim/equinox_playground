@@ -1,7 +1,9 @@
 import jax
+import optax
 import equinox as eqx
 from jax import random
 import jax.numpy as jnp
+from utils import eqx_adaptive_grad_clip
 from networks import RSSM, ImageEncoder, ImageDecoder, MLP
 
 
@@ -9,6 +11,8 @@ class WorldModel(eqx.Module):
     rssm: eqx.Module
     encoder: eqx.Module
     heads: dict
+
+    opt: optax.chain
 
     obs_space: tuple
     act_space: tuple
@@ -18,7 +22,7 @@ class WorldModel(eqx.Module):
     def __init__(self, key, obs_space, act_space, config):
         encoder_param_key, rssm_param_key, heads_param_key = random.split(key, num=3)
         self.obs_space = obs_space
-        self.act_space = act_space["action"]
+        self.act_space = act_space
         self.config = config
 
         self.encoder = ImageEncoder(encoder_param_key, **config.encoder)
@@ -42,11 +46,16 @@ class WorldModel(eqx.Module):
                 **config.cont_head,
             ),
         }
+
+        self.opt = optax.chain(eqx_adaptive_grad_clip(0.3), optax.rmsprop(learning_rate=config.learning_rate, eps=1e-20, momentum=True))
     
     def initial(self, batch_size):
         prev_latent = self.rssm.initial(batch_size)
         prev_action = jnp.zeros((batch_size, *self.act_space.shape))
         return prev_latent, prev_action
+    
+    def train(self, key, data):
+        pass
     
     def loss(self, key, data, state):
         step_key, loss_key = random.split(key, num=2)
@@ -58,6 +67,7 @@ class WorldModel(eqx.Module):
         feat = jnp.concatenate([outs["stoch"], outs["deter"]], -1)
         for name, head in self.heads.items():
             dist = head(feat)
+            metrics.update({name: dist.mean()})
             loss.update({name: -dist.log_prob(jnp.squeeze(data[name]).astype("float32")).sum()})
         
         return loss, metrics
@@ -69,4 +79,9 @@ class ImagActorCritic(eqx.Module):
 
 
 class VFunction(eqx.Module):
+    pass
+
+
+
+if __name__ == '__main__':
     pass

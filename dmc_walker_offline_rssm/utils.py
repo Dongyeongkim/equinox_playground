@@ -1,4 +1,8 @@
+import collections
+import re
+
 import jax
+import optax
 import equinox as eqx
 import jax.numpy as jnp
 from optax._src import base
@@ -10,8 +14,7 @@ tfd = tfp.distributions
 sg = lambda x: jax.tree_util.tree_map(jax.lax.stop_gradient, x)
 
 
-
-# optimiser
+# will add optimizer
 
 # normalising function
 
@@ -98,6 +101,101 @@ def eqx_adaptive_grad_clip(clipping: float, eps: float = 1e-3):
         return updates, state
 
     return base.GradientTransformation(init_fn, update_fn)
+
+
+# scale-by-rms
+
+
+def scale_by_rms(beta=0.999, eps=1e-8):
+
+    def init_fn(params):
+        nu = jax.tree_util.tree_map(lambda t: jnp.zeros_like(t, "float32"), params)
+        step = jnp.zeros((), "int32")
+        return (step, nu)
+
+    def update_fn(updates, state, params=None):
+        step, nu = state
+        step = optax.safe_int32_increment(step)
+        nu = jax.tree_util.tree_map(
+            lambda v, u: beta * v + (1 - beta) * (u * u), nu, updates
+        )
+        nu_hat = optax.bias_correction(nu, beta, step)
+        updates = jax.tree_util.tree_map(
+            lambda u, v: u / (jnp.sqrt(v) + eps), updates, nu_hat
+        )
+        return updates, (step, nu)
+
+    return optax.GradientTransformation(init_fn, update_fn)
+
+
+# scale-by-momentum
+
+
+def scale_by_momentum(beta=0.9, nesterov=False):
+    def init_fn(params):
+        mu = jax.tree_util.tree_map(lambda t: jnp.zeros_like(t, "float32"), params)
+        step = jnp.zeros((), "int32")
+        return (step, mu)
+
+    def update_fn(updates, state, params=None):
+        step, mu = state
+        step = optax.safe_int32_increment(step)
+        mu = optax.update_moment(updates, mu, beta, 1)
+        if nesterov:
+            mu_nesterov = optax.update_moment(updates, mu, beta, 1)
+            mu_hat = optax.bias_correction(mu_nesterov, beta, step)
+        else:
+            mu_hat = optax.bias_correction(mu, beta, step)
+        return mu_hat, (step, mu)
+
+    return optax.GradientTransformation(init_fn, update_fn)
+
+
+# scale-by-groups
+
+
+def expand_groups(groups, keys):
+    if isinstance(groups, (float, int)):
+        return {key: groups for key in keys}
+    groups = {
+        group if group.endswith("/") else f"{group}/": value
+        for group, value in groups.items()
+    }
+    assignment = {}
+    groupcount = collections.defaultdict(int)
+    for key in keys:
+        matches = [prefix for prefix in groups if key.startswith(prefix)]
+        if not matches:
+            raise ValueError(
+                f"Parameter {key} not fall into any of the groups:\n"
+                + "".join(f"- {group}\n" for group in groups.keys())
+            )
+        if len(matches) > 1:
+            raise ValueError(
+                f"Parameter {key} fall into more than one of the groups:\n"
+                + "".join(f"- {group}\n" for group in groups.keys())
+            )
+        assignment[key] = matches[0]
+        groupcount[matches[0]] += 1
+    for group in groups.keys():
+        if not groupcount[group]:
+            raise ValueError(
+                f"Group {group} did not match any of the {len(keys)} keys."
+            )
+    expanded = {key: groups[assignment[key]] for key in keys}
+    return expanded
+
+
+def scale_by_groups(groups):
+    def init_fn(params):
+        return ()
+
+    def update_fn(updates, state, params=None):
+        scales = expand_groups(groups, updates.keys())
+        updates = jax.tree_util.treemap(lambda u, s: u * s, updates, scales)
+        return updates, state
+
+    return optax.GradientTransformation(init_fn, update_fn)
 
 
 # Distributions
