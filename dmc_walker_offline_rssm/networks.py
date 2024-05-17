@@ -31,6 +31,7 @@ class RSSM(eqx.Module):
     minres: int = 4
     norm: str = "rms"
     act: str = "silu"
+    winit: str = "normal"
     unimix: float = 0.01
     outscale: float = 1.0
 
@@ -57,6 +58,7 @@ class RSSM(eqx.Module):
         minres=4,
         norm="rms",
         act="silu",
+        winit="normal",
         unimix=0.01,
         outscale=1.0,
         num_imglayer=2,
@@ -90,6 +92,7 @@ class RSSM(eqx.Module):
         self.minres = minres
         self.norm = norm
         self.act = act
+        self.winit = winit
         self.unimix = unimix
         self.outscale = outscale
 
@@ -121,6 +124,7 @@ class RSSM(eqx.Module):
                 act=self.act,
                 norm=self.norm,
                 outscale=self.outscale,
+                winit=self.winit,
                 binit=False,
                 pdtype=self.pdtype,
                 cdtype=self.cdtype,
@@ -132,6 +136,7 @@ class RSSM(eqx.Module):
                     out_features=self.hidden,
                     act=self.act,
                     norm=self.norm,
+                    winit=self.winit,
                     pdtype=self.pdtype,
                     cdtype=self.cdtype,
                 ),
@@ -148,6 +153,7 @@ class RSSM(eqx.Module):
                 act=self.act,
                 norm=self.norm,
                 outscale=self.outscale,
+                winit=self.winit,
                 binit=False,
                 pdtype=self.pdtype,
                 cdtype=self.cdtype,
@@ -160,6 +166,7 @@ class RSSM(eqx.Module):
                     out_features=self.hidden,
                     act=self.act,
                     norm=self.norm,
+                    winit=self.winit,
                     pdtype=self.pdtype,
                     cdtype=self.cdtype,
                 ),
@@ -174,6 +181,7 @@ class RSSM(eqx.Module):
                 in_features=self.hidden,
                 out_features=3 * self.deter,
                 num_groups=self.blocks,
+                winit=self.winit,
                 pdtype=self.pdtype,
                 cdtype=self.cdtype,
             ),
@@ -185,6 +193,7 @@ class RSSM(eqx.Module):
                     num_groups=self.blocks,
                     act=self.act,
                     norm=self.norm,
+                    winit=self.winit,
                     pdtype=self.pdtype,
                     cdtype=self.cdtype,
                 )
@@ -195,6 +204,7 @@ class RSSM(eqx.Module):
                 out_features=self.hidden,
                 act=self.act,
                 norm=self.norm,
+                winit=self.winit,
                 pdtype=self.pdtype,
                 cdtype=self.cdtype,
             ),
@@ -204,6 +214,7 @@ class RSSM(eqx.Module):
                 out_features=self.hidden,
                 act=self.act,
                 norm=self.norm,
+                winit=self.winit,
                 pdtype=self.pdtype,
                 cdtype=self.cdtype,
             ),
@@ -213,6 +224,7 @@ class RSSM(eqx.Module):
                 out_features=self.hidden,
                 act=self.act,
                 norm=self.norm,
+                winit=self.winit,
                 pdtype=self.pdtype,
                 cdtype=self.cdtype,
             ),
@@ -228,6 +240,7 @@ class RSSM(eqx.Module):
                     num_groups=self.blocks,
                     act=self.act,
                     norm=self.norm,
+                    winit=self.winit,
                     pdtype=self.pdtype,
                     cdtype=self.cdtype,
                 )
@@ -396,6 +409,7 @@ class RSSM(eqx.Module):
                     out_features=self.hidden,
                     act=self.act,
                     norm=self.norm,
+                    winit=self.winit,
                     pdtype=self.pdtype,
                     cdtype=self.cdtype,
                 )
@@ -413,11 +427,12 @@ class ImageEncoder(eqx.Module):
         key,
         debug_outer,
         channel_depth,
-        channel_multipliers,
+        channel_mults,
         kernel_size,
         stride,
         norm="rms",
         act="silu",
+        winit="normal",
         minres=4,
         use_rgb=True,
         pdtype="float32",
@@ -425,11 +440,11 @@ class ImageEncoder(eqx.Module):
     ):
 
         channels = (3 if use_rgb else 1,) + tuple(
-            [channel_depth * mult for mult in channel_multipliers]
+            [channel_depth * mult for mult in channel_mults]
         )
 
         self._conv_layers = []
-        for i in range(len(channel_multipliers)):
+        for i in range(len(channel_mults)):
             stride_ = 1 if (debug_outer and (i == 0)) else stride
             key, param_key = random.split(key, num=2)
             self._conv_layers.append(
@@ -441,6 +456,7 @@ class ImageEncoder(eqx.Module):
                     stride=stride_,
                     act=act,
                     norm=norm,
+                    winit=winit,
                     pdtype=pdtype,
                     cdtype=cdtype,
                 )
@@ -471,18 +487,19 @@ class ImageDecoder(eqx.Module):
         latent_cls,
         debug_outer,
         channel_depth,
-        channel_multipliers,
+        channel_mults,
         kernel_size,
         stride,
         norm="rms",
         act="silu",
+        winit="normal",
         minres=4,
         use_rgb=True,
         pdtype="float32",
         cdtype="float32",
     ):
         channels = (3 if use_rgb else 1,) + tuple(
-            [channel_depth * mult for mult in channel_multipliers]
+            [channel_depth * mult for mult in channel_mults]
         )
 
         key, param_key = random.split(key, num=2)
@@ -509,6 +526,7 @@ class ImageDecoder(eqx.Module):
                         stride=stride_,
                         transpose=True,
                         norm=norm,
+                        winit=winit,
                         pdtype=pdtype,
                         cdtype=cdtype,
                     )
@@ -524,6 +542,7 @@ class ImageDecoder(eqx.Module):
                         transpose=True,
                         act=act,
                         norm=norm,
+                        winit=winit,
                         pdtype=pdtype,
                         cdtype=cdtype,
                     )
@@ -647,10 +666,8 @@ class MLP(eqx.Module):
 class Dist(eqx.Module):
     _mean: eqx.Module
     _std: eqx.Module
-    in_features: int
     out_shape: tuple
     num_unit: int
-    outscale: float
     minstd: float
     maxstd: float
     unimix: float
@@ -713,7 +730,7 @@ class Dist(eqx.Module):
             )
         else:
             self._mean = Linear(
-                mean_key,
+                key,
                 in_features=in_features,
                 out_features=self.num_unit,
                 use_bias=use_bias,
@@ -744,11 +761,11 @@ class Dist(eqx.Module):
 
         if "normal" in self.dist:
             std = self._std(inputs)
-            std = std.reshape(inputs.shape[:-1] + self.shape).astype("float32")
+            std = std.reshape(inputs.shape[:-1] + self.out_shape).astype("float32")
 
         if self.dist == "symlog_mse":
             fwd, bwd = symlog, symexp
-            return TransformedMseDist(out, len(self.shape), fwd, bwd)
+            return TransformedMseDist(out, len(self.out_shape), fwd, bwd)
 
         if self.dist == "hyperbolic_mse":
             fwd = lambda x, eps=1e-3: (
@@ -761,11 +778,11 @@ class Dist(eqx.Module):
                 )
                 - 1
             )
-            return TransformedMseDist(out, len(self.shape), fwd, bwd)
+            return TransformedMseDist(out, len(self.out_shape), fwd, bwd)
 
         if self.dist == "symlog_and_twohot":
             bins = np.linspace(-20, 20, out.shape[-1])
-            return TwoHotDist(out, bins, len(self.shape), symlog, symexp)
+            return TwoHotDist(out, bins, len(self.out_shape), symlog, symexp)
 
         if self.dist == "symexp_twohot":
             if out.shape[-1] % 2 == 1:
@@ -778,7 +795,7 @@ class Dist(eqx.Module):
                 half = jnp.linspace(-20, 0, out.shape[-1] // 2, dtype="float32")
                 half = symexp(half)
                 bins = jnp.concatenate([half, -half[::-1]], 0)
-            return TwoHotDist(out, bins, len(self.shape))
+            return TwoHotDist(out, bins, len(self.out_shape))
 
         if self.dist == "hyperbolic_twohot":
             eps = 0.001
@@ -789,19 +806,19 @@ class Dist(eqx.Module):
                 - 1
             )
             bins = f(np.linspace(-300, 300, out.shape[-1]))
-            return TwoHotDist(out, bins, len(self.shape))
+            return TwoHotDist(out, bins, len(self.out_shape))
 
         if self.dist == "mse":
-            return MSEDist(out, len(self.shape), "sum")
+            return MSEDist(out, len(self.out_shape), "sum")
 
         if self.dist == "huber":
-            return HuberDist(out, len(self.shape), "sum")
+            return HuberDist(out, len(self.out_shape), "sum")
 
         if self.dist == "normal":
             lo, hi = self.minstd, self.maxstd
             std = (hi - lo) * jax.nn.sigmoid(std + 2.0) + lo
             dist = tfd.Normal(jnp.tanh(out), std)
-            dist = tfd.Independent(dist, len(self.shape))
+            dist = tfd.Independent(dist, len(self.out_shape))
             dist.minent = self.num_unit * tfd.Normal(0.0, lo).entropy()
             dist.maxent = self.num_unit * tfd.Normal(0.0, hi).entropy()
             return dist
@@ -810,7 +827,7 @@ class Dist(eqx.Module):
             lo, hi = self.minstd, self.maxstd
             std = (hi - lo) * jax.nn.sigmoid(std + 2.0) + lo
             dist = tfd.TruncatedNormal(jnp.tanh(out), std, -1, 1)
-            dist = tfd.Independent(dist, len(self.shape))
+            dist = tfd.Independent(dist, len(self.out_shape))
             dist.minent = self.num_unit * (
                 tfd.TruncatedNormal(1.0, lo, -1, 1).entropy()
             )
@@ -821,14 +838,14 @@ class Dist(eqx.Module):
 
         if self.dist == "binary":
             dist = tfd.Bernoulli(out)
-            if self.shape:
-                dist = tfd.Independent(dist, len(self.shape))
+            if self.out_shape:
+                dist = tfd.Independent(dist, len(self.out_shape))
             return dist
 
         if self.dist == "softmax":
             dist = tfd.Categorical(out)
-            if len(self.shape) > 1:
-                dist = tfd.Independent(dist, len(self.shape) - 1)
+            if len(self.out_shape) > 1:
+                dist = tfd.Independent(dist, len(self.out_shape) - 1)
             return dist
 
         if self.dist == "onehot":
@@ -838,10 +855,10 @@ class Dist(eqx.Module):
                 probs = (1 - self.unimix) * probs + self.unimix * uniform
                 out = jnp.log(probs)
             dist = OneHotDist(out)
-            if len(self.shape) > 1:
-                dist = tfd.Independent(dist, len(self.shape) - 1)
+            if len(self.out_shape) > 1:
+                dist = tfd.Independent(dist, len(self.out_shape) - 1)
             dist.minent = 0.0
-            dist.maxent = np.prod(self.out_shape[:-1]) * np.log(self.shape[-1])
+            dist.maxent = np.prod(self.out_shape[:-1]) * np.log(self.out_shape[-1])
             return dist
 
         raise NotImplementedError(self.dist)
