@@ -254,12 +254,12 @@ class RSSM(eqx.Module):
         )  # change carry and action swapaxes (B, T) -> (T, B)
 
         carry["key"] = key
-        carry, outs = jax.lax.scan(
+        _, outs = jax.lax.scan(
             f=lambda *a, **kw: self.obs_step(*a, **kw),
             init=carry,
             xs=(actions, embeds, resets),
         )  # https://github.com/patrick-kidger/equinox/issues/558
-        return carry, outs
+        return outs
 
     def imagine(self, key, carry, actions, tdim=1):
         # input as (B, T, C), calculates in (T, B, C), and output as (B, T, C)

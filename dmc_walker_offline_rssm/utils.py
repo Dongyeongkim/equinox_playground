@@ -10,6 +10,9 @@ tfd = tfp.distributions
 sg = lambda x: jax.tree_util.tree_map(jax.lax.stop_gradient, x)
 
 
+
+# optimiser
+
 # normalising function
 
 
