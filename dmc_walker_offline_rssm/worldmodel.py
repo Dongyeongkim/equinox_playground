@@ -29,6 +29,7 @@ class WorldModel(eqx.Module):
         self.heads = {
             "decoder": ImageDecoder(
                 dec_param_key,
+                **config.decoder,
             ),
             "reward": MLP(
                 rew_param_key,
@@ -51,7 +52,21 @@ class WorldModel(eqx.Module):
         step_key, loss_key = random.split(key, num=2)
         embeds = eqx.filter_vmap(self.encoder, in_axes=1)(data['obs'])
         prev_latent, prev_action = state
-        prev_actions = jnp.concatenate([prev_action[:, None], data['action'][:, :-1]], 1)
-
+        prev_actions = jnp.concatenate([prev_action[:, None, ...], data['action'][:, :-1, ...]], 1)
         outs = self.rssm.observe(step_key, prev_latent, prev_actions, embeds, data['is_first'])
         loss, metrics = self.rssm.loss(loss_key, outs)
+        feat = jnp.concatenate([outs["stoch"], outs["deter"]], -1)
+        for name, head in self.heads.items():
+            dist = head(feat)
+            loss.update({name: -dist.log_prob(jnp.squeeze(data[name]).astype("float32")).sum()})
+        
+        return loss, metrics
+    
+
+
+class ImagActorCritic(eqx.Module):
+    pass
+
+
+class VFunction(eqx.Module):
+    pass

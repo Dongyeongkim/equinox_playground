@@ -539,7 +539,7 @@ class ImageDecoder(eqx.Module):
         for layer in self._convtr_layers:
             x = layer(x)
         x += 0.5
-        return x
+        return TransformedMseDist(x, 0, symlog, symexp)
 
 
 class MLP(eqx.Module):
