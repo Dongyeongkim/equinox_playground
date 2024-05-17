@@ -41,12 +41,10 @@ class WorldModel(eqx.Module):
             ),
             "reward": MLP(
                 rew_param_key,
-                out_shape=(),
                 **config.reward_head,
             ),
             "cont": MLP(
                 cont_param_key,
-                out_shape=(),
                 **config.cont_head,
             ),
         }
@@ -144,7 +142,7 @@ if __name__ == "__main__":
                 "num_units": 256,
                 "act": "silu",
                 "norm": "rms",
-                "out_unit": (),
+                "out_shape": (),
                 "dist": "symexp_twohot",
                 "outscale": 0.0,
                 "winit": "normal",
@@ -155,7 +153,7 @@ if __name__ == "__main__":
                 "num_units": 256,
                 "act": "silu",
                 "norm": "rms",
-                "out_unit": (),
+                "out_shape": (),
                 "dist": "binary",
                 "outscale": 0.0,
                 "winit": "normal",
