@@ -12,8 +12,6 @@ class WorldModel(eqx.Module):
     encoder: eqx.Module
     heads: dict
 
-    opt: optax.chain
-
     obs_space: tuple
     act_space: tuple
     config: dict
@@ -49,18 +47,10 @@ class WorldModel(eqx.Module):
             ),
         }
 
-        self.opt = optax.chain(
-            eqx_adaptive_grad_clip(0.3),
-            optax.rmsprop(learning_rate=config.lr, eps=1e-20, momentum=True),
-        )
-
     def initial(self, batch_size):
         prev_latent = self.rssm.initial(batch_size)
         prev_action = jnp.zeros((batch_size, *self.act_space.shape))
         return prev_latent, prev_action
-
-    def train(self, key, data):
-        pass
 
     def loss(self, key, data, state):
         step_key, loss_key = random.split(key, num=2)
