@@ -25,12 +25,12 @@ def loss(worldmodel, key, data, state):
 
 @eqx.filter_jit
 def train_step(model, optim, opt_state, key, data, state):
-    (_, loss_and_info), grads = eqx.filter_value_and_grad(loss, has_aux=True)(
+    (total_loss, loss_and_info), grads = eqx.filter_value_and_grad(loss, has_aux=True)(
         model, key, data, state
     )
     updates, opt_state = optim.update(grads, opt_state, model)
     model = eqx.apply_updates(model, updates)
-    return model, opt_state, loss_and_info
+    return model, opt_state, total_loss, loss_and_info
 
 
 def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
@@ -62,12 +62,16 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
             data.update({"is_first": jnp.array(is_first)})
             data.update({"cont": jnp.array(cont)})
             training_key, partial_key = random.split(training_key, num=2)
-            wm, opt_state, loss_and_info = train_step(
+            wm, opt_state, total_loss, loss_and_info = train_step(
                 wm, optim, opt_state, partial_key, data, state
             )
+            print(f"curent loss is: {total_loss}")
             loss_info, info = loss_and_info
+            current_step = len(ds["is_first"])*epoch+step
+            summary_writer.add_scalar(f"train/loss/total_loss", total_loss, global_step=current_step)
             for k, v in loss_info.items():
-                summary_writer.add_scalar(f"train/loss/{k}", v, global_step=len(ds["is_first"])*epoch+step)
+                summary_writer.add_scalar(f"train/loss/{k}_loss", v, global_step=current_step)
+                
 
 
 if __name__ == "__main__":
@@ -140,7 +144,7 @@ if __name__ == "__main__":
                 "cdtype": "bfloat16",
             },
             "seed": 0,
-            "lr": 5e-4,
+            "lr": 1e-4,
             "batch_size": 16,
             "traj_length": 64,
             "precision": 16,

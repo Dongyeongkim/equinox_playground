@@ -73,13 +73,15 @@ class WorldModel(eqx.Module):
             [outs["stoch"].reshape(*outs["stoch"].shape[:-2], -1), outs["deter"]], -1
         )
         for name, head in self.heads.items():
+            log_name = name
             data_name = name
             dist = head(feat)
             if data_name == "decoder":
+                log_name = "recon"
                 data_name = "image"
                 dist = MSEDist(dist.astype("float32"), 3, "sum")
-            metrics.update({data_name: dist.mean()})
-            loss.update({name: -dist.log_prob(data[data_name].astype("float32"))})
+            metrics.update({log_name: dist.mean()})
+            loss.update({log_name: -dist.log_prob(data[data_name].astype("float32"))})
 
         return loss, metrics
 
