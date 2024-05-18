@@ -107,7 +107,8 @@ for image, action, reward, is_first, cont in zip(ds["image"], ds["action"], ds["
     loss, metrics = wm.loss(partial_key, data, state)
     for k, v in loss.items():
         print(f'{k}: {v.shape}')
-    #print(metrics.items())
+    for k, v in metrics.items():
+        print(f'{k}: {v.shape}')
 
 def lossfn(loss: dict):
     pass
