@@ -17,6 +17,8 @@ def loss(worldmodel, key, data, state):
     loss = 0
     for k, v in losses.items():
         partial_loss = v.sum(axis=1).mean()
+        if k == "rep":
+            partial_loss *= 0.1
         real_loss.update({k: partial_loss})
         loss += partial_loss
 
@@ -39,8 +41,8 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
 
     wm = WorldModel(param_key, (64, 64, 3), 6, config)
     optim = optax.chain(
-        eqx_adaptive_grad_clip(0.3),
-        optax.rmsprop(learning_rate=config.lr, eps=1e-20, momentum=True),
+        optax.clip_by_global_norm(1000.0),
+        optax.adamaxw(learning_rate=config.lr),
     )
 
     ds = get_dataset(
@@ -78,13 +80,13 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
                 )
 
             for k, v in info.items():
-                if (epoch * len(ds["is_first"]) + step) == 0:
+                if (epoch * len(ds["is_first"]) + step) % 1000 == 0:
                     if k == "recon":
                         summary_writer.add_video(
-                            f"train/info/{k}_video", jnp.clip(v, 0, 1), global_step=current_step, dataformats="NTHWC"
+                            f"train/info/{k}_video", v, global_step=current_step, dataformats="NTHWC"
                             )
                         summary_writer.add_images(
-                            f"train/info/{k}_image", jnp.clip(video_grid(v), 0, 1), global_step=current_step, dataformats="NHWC"
+                            f"train/info/{k}_image", video_grid(v[:, :16]), global_step=current_step, dataformats="NHWC"
                             )                
                     if v.shape == (1,):
                         summary_writer.add_scalar(f"train/log/{k}", float(v), global_step=current_step)
@@ -103,7 +105,7 @@ if __name__ == "__main__":
                 "kernel_size": 5,
                 "stride": 2,
                 "minres": 4,
-                "cdtype": "float32",
+                "cdtype": "bfloat16",
             },
             "rssm": {
                 "deter": 4096,
@@ -121,7 +123,7 @@ if __name__ == "__main__":
                 "blocks": 8,
                 "block_fans": False,
                 "block_norm": False,
-                "cdtype": "float32",
+                "cdtype": "bfloat16",
             },
             "decoder": {
                 "channel_depth": 32,
@@ -133,7 +135,7 @@ if __name__ == "__main__":
                 "kernel_size": 5,
                 "stride": 2,
                 "minres": 4,
-                "cdtype": "float32",
+                "cdtype": "bfloat16",
             },
             "reward_head": {
                 "num_layers": 1,
@@ -145,7 +147,7 @@ if __name__ == "__main__":
                 "dist": "symexp_twohot",
                 "outscale": 0.0,
                 "winit": "normal",
-                "cdtype": "float32",
+                "cdtype": "bfloat16",
             },
             "cont_head": {
                 "num_layers": 1,
@@ -157,7 +159,7 @@ if __name__ == "__main__":
                 "dist": "binary",
                 "outscale": 0.0,
                 "winit": "normal",
-                "cdtype": "float32",
+                "cdtype": "bfloat16",
             },
             "seed": 0,
             "lr": 1e-4,
