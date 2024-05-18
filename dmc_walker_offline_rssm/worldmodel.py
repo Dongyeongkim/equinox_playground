@@ -20,14 +20,12 @@ class WorldModel(eqx.Module):
         encoder_param_key, rssm_param_key, heads_param_key = random.split(key, num=3)
         self.obs_space = obs_space
         self.act_space = act_space
-        self.config = config
-        self.config.rssm.action_dim = self.act_space
-        self.config.rssm.channel_depth = self.config.encoder.channel_depth
-        self.config.rssm.channel_mults = self.config.encoder.channel_mults
-        self.config.decoder.deter = self.config.rssm.deter
-        self.config.decoder.latent_dim = self.config.rssm.latent_dim
-        self.config.decoder.latent_cls = self.config.rssm.latent_cls
-
+        config.rssm.action_dim = self.act_space
+        config.rssm.channel_depth = config.encoder.channel_depth
+        config.rssm.channel_mults = config.encoder.channel_mults
+        config.decoder.deter = config.rssm.deter
+        config.decoder.latent_dim = config.rssm.latent_dim
+        config.decoder.latent_cls = config.rssm.latent_cls
         self.encoder = ImageEncoder(encoder_param_key, **config.encoder)
         self.rssm = RSSM(rssm_param_key, **config.rssm)
         dec_param_key, rew_param_key, cont_param_key = random.split(
@@ -51,6 +49,7 @@ class WorldModel(eqx.Module):
                 **config.cont_head,
             ),
         }
+        self.config = config.to_dict()
 
     def initial(self, batch_size):
         prev_latent = self.rssm.initial(batch_size)
