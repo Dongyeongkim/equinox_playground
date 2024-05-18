@@ -16,6 +16,14 @@ sg = lambda x: jax.tree_util.tree_map(jax.lax.stop_gradient, x)
 
 # will add optimizer
 
+# video grid
+
+
+def video_grid(video):
+    B, T, H, W, C = video.shape
+    return video.transpose((1, 2, 0, 3, 4)).reshape((T, H, B * W, C))
+
+
 # normalising function
 
 

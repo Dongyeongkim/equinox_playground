@@ -7,7 +7,7 @@ import jax.numpy as jnp
 from dataset import get_dataset
 from worldmodel import WorldModel
 import tensorboardX as tensorboard
-from utils import eqx_adaptive_grad_clip
+from utils import eqx_adaptive_grad_clip, video_grid
 
 
 @eqx.filter_jit
@@ -36,7 +36,7 @@ def train_step(model, optim, opt_state, key, data, state):
 def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
     summary_writer = tensorboard.SummaryWriter(workdir)
     param_key, training_key = random.split(random.key(config.seed), num=2)
-    
+
     wm = WorldModel(param_key, (64, 64, 3), 6, config)
     optim = optax.chain(
         eqx_adaptive_grad_clip(0.3),
@@ -53,9 +53,9 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
     state = wm.initial(config.batch_size)
     opt_state = optim.init(eqx.filter(wm, eqx.is_array))
     for epoch in range(config.num_epoch):
-        for step, (image, action, reward, is_first, cont) in enumerate(zip(
-            ds["image"], ds["action"], ds["reward"], ds["is_first"], ds["cont"]
-        )):
+        for step, (image, action, reward, is_first, cont) in enumerate(
+            zip(ds["image"], ds["action"], ds["reward"], ds["is_first"], ds["cont"])
+        ):
             data.update({"image": jnp.array(image / 255.0)})
             data.update({"action": jnp.array(action)})
             data.update({"reward": jnp.array(reward)})
@@ -67,11 +67,24 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
             )
             print(f"curent loss is: {total_loss}")
             loss_info, info = loss_and_info
-            current_step = len(ds["is_first"])*epoch+step
-            summary_writer.add_scalar(f"train/loss/total_loss", total_loss, global_step=current_step)
+            current_step = len(ds["is_first"]) * epoch + step
+            summary_writer.add_scalar(
+                f"train/loss/total_loss", total_loss, global_step=current_step
+            )
             for k, v in loss_info.items():
-                summary_writer.add_scalar(f"train/loss/{k}_loss", v, global_step=current_step)
-                
+                summary_writer.add_scalar(
+                    f"train/loss/{k}_loss", v, global_step=current_step
+                )
+
+            for k, v in info.items():
+                if k == "recon":
+                    summary_writer.add_video(
+                        f"train/info/{k}", video_grid(v), global_step=current_step
+                    )
+                else:
+                    summary_writer.add_scalar(
+                        f"train/log/{k}", v, global_step=current_step
+                    )
 
 
 if __name__ == "__main__":
@@ -152,4 +165,4 @@ if __name__ == "__main__":
         }
     )
 
-    train_and_evaluate(config, 'exp_local/')
+    train_and_evaluate(config, "exp_local/")
