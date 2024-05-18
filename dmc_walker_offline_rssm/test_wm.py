@@ -1,5 +1,6 @@
 import jax
 import optax
+import numpy as np
 import ml_collections
 import equinox as eqx
 from jax import random
@@ -83,10 +84,10 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
                 if (epoch * len(ds["is_first"]) + step) % 1000 == 0:
                     if k == "recon":
                         summary_writer.add_video(
-                            f"train/info/{k}_video", v, global_step=current_step, dataformats="NTHWC"
+                            f"train/info/{k}_video", np.clip(255 * v, 0, 255).astype(np.uint8), global_step=current_step, dataformats="NTHWC"
                             )
                         summary_writer.add_images(
-                            f"train/info/{k}_image", video_grid(v[:, :16]), global_step=current_step, dataformats="NHWC"
+                            f"train/info/{k}_image", video_grid(np.clip(255 * v, 0, 255).astype(np.uint8)), global_step=current_step, dataformats="NHWC"
                             )                
                     if v.shape == (1,):
                         summary_writer.add_scalar(f"train/log/{k}", float(v), global_step=current_step)

@@ -3,7 +3,7 @@ import optax
 import equinox as eqx
 from jax import random
 import jax.numpy as jnp
-from utils import eqx_adaptive_grad_clip, MSEDist
+from utils import eqx_adaptive_grad_clip, TransformedMseDist, symlog, symexp
 from networks import RSSM, ImageEncoder, ImageDecoder, MLP
 
 
@@ -79,7 +79,7 @@ class WorldModel(eqx.Module):
             if data_name == "decoder":
                 log_name = "recon"
                 data_name = "image"
-                dist = MSEDist(dist.astype("float32"), 3, "sum")
+                dist = TransformedMseDist(dist.astype("float32"), 3, symlog, symexp, "sum")
             if log_name == "recon":
                 metrics.update({log_name: dist.mean()})
             loss.update({log_name: -dist.log_prob(data[data_name].astype("float32"))})
