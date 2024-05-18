@@ -47,7 +47,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
         "buffer/",
         config.batch_size,
         config.traj_length,
-        "bfloat16" if config.precision == 16 else "float32",
+        "float32",
     )
     data = {}
     state = wm.initial(config.batch_size)
@@ -65,7 +65,8 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
             wm, opt_state, total_loss, loss_and_info = train_step(
                 wm, optim, opt_state, partial_key, data, state
             )
-            print(f"curent loss is: {total_loss}")
+            if (epoch * len(ds["is_first"]) + step) % 1000 == 0:
+                print(f"epoch: {epoch} step: {step}, curent loss is: {total_loss}")
             loss_info, info = loss_and_info
             current_step = len(ds["is_first"]) * epoch + step
             summary_writer.add_scalar(
@@ -77,21 +78,23 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
                 )
 
             for k, v in info.items():
-                if k == "recon":
-                    summary_writer.add_video(
-                        f"train/info/{k}", video_grid(v), global_step=current_step
-                    )
-                else:
-                    summary_writer.add_scalar(
-                        f"train/log/{k}", v, global_step=current_step
-                    )
+                if (epoch * len(ds["is_first"]) + step) == 0:
+                    if k == "recon":
+                        summary_writer.add_video(
+                            f"train/info/{k}_video", jnp.clip(v, 0, 1), global_step=current_step, dataformats="NTHWC"
+                            )
+                        summary_writer.add_images(
+                            f"train/info/{k}_image", jnp.clip(video_grid(v), 0, 1), global_step=current_step, dataformats="NHWC"
+                            )                
+                    if v.shape == (1,):
+                        summary_writer.add_scalar(f"train/log/{k}", float(v), global_step=current_step)
 
 
 if __name__ == "__main__":
     config = ml_collections.ConfigDict(
         {
             "encoder": {
-                "channel_depth": 16,
+                "channel_depth": 32,
                 "channel_mults": (1, 2, 3, 4, 4),
                 "act": "silu",
                 "norm": "rms",
@@ -100,13 +103,13 @@ if __name__ == "__main__":
                 "kernel_size": 5,
                 "stride": 2,
                 "minres": 4,
-                "cdtype": "bfloat16",
+                "cdtype": "float32",
             },
             "rssm": {
-                "deter": 1024,
-                "hidden": 256,
+                "deter": 4096,
+                "hidden": 512,
                 "latent_dim": 32,
-                "latent_cls": 16,
+                "latent_cls": 32,
                 "act": "silu",
                 "norm": "rms",
                 "unimix": 0.01,
@@ -118,10 +121,10 @@ if __name__ == "__main__":
                 "blocks": 8,
                 "block_fans": False,
                 "block_norm": False,
-                "cdtype": "bfloat16",
+                "cdtype": "float32",
             },
             "decoder": {
-                "channel_depth": 16,
+                "channel_depth": 32,
                 "channel_mults": (1, 2, 3, 4, 4),
                 "act": "silu",
                 "norm": "rms",
@@ -130,38 +133,38 @@ if __name__ == "__main__":
                 "kernel_size": 5,
                 "stride": 2,
                 "minres": 4,
-                "cdtype": "bfloat16",
+                "cdtype": "float32",
             },
             "reward_head": {
                 "num_layers": 1,
-                "in_features": 1536,
-                "num_units": 256,
+                "in_features": 5120,
+                "num_units": 512,
                 "act": "silu",
                 "norm": "rms",
                 "out_shape": (),
                 "dist": "symexp_twohot",
                 "outscale": 0.0,
                 "winit": "normal",
-                "cdtype": "bfloat16",
+                "cdtype": "float32",
             },
             "cont_head": {
                 "num_layers": 1,
-                "in_features": 1536,
-                "num_units": 256,
+                "in_features": 5120,
+                "num_units": 512,
                 "act": "silu",
                 "norm": "rms",
                 "out_shape": (),
                 "dist": "binary",
                 "outscale": 0.0,
                 "winit": "normal",
-                "cdtype": "bfloat16",
+                "cdtype": "float32",
             },
             "seed": 0,
             "lr": 1e-4,
             "batch_size": 16,
             "traj_length": 64,
             "precision": 16,
-            "num_epoch": 10,
+            "num_epoch": 100,
         }
     )
 

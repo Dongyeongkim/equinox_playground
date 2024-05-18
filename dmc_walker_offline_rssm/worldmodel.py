@@ -80,7 +80,8 @@ class WorldModel(eqx.Module):
                 log_name = "recon"
                 data_name = "image"
                 dist = MSEDist(dist.astype("float32"), 3, "sum")
-            metrics.update({log_name: dist.mean()})
+            if log_name == "recon":
+                metrics.update({log_name: dist.mean()})
             loss.update({log_name: -dist.log_prob(data[data_name].astype("float32"))})
 
         return loss, metrics
