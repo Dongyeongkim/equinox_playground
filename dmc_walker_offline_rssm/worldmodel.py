@@ -78,15 +78,9 @@ class WorldModel(eqx.Module):
             dist = head(feat)
             if data_name == "decoder":
                 data_name = "image"
-                dist = MSEDist(dist.astype("float32"), 3, 'sum')
-            metrics.update({name: dist.mean()})
-            loss.update(
-                {
-                    name: -dist.log_prob(
-                        jnp.squeeze(data[data_name]).astype("float32")
-                    ).sum()
-                }
-            )
+                dist = MSEDist(dist.astype("float32"), 3, "sum")
+            metrics.update({data_name: dist.mean()})
+            loss.update({name: -dist.log_prob(data[data_name].astype("float32"))})
 
         return loss, metrics
 

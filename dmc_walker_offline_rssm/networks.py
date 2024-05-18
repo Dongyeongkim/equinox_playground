@@ -349,6 +349,7 @@ class RSSM(eqx.Module):
         if free:
             dyn = jnp.maximum(dyn, free)
             rep = jnp.maximum(rep, free)
+        
         metrics.update(
             tensorstats(key, self._dist(outs["prior"]).entropy(), "prior_ent")
         )

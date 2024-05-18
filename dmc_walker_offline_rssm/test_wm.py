@@ -105,8 +105,9 @@ for image, action, reward, is_first, cont in zip(ds["image"], ds["action"], ds["
     data.update({"cont": jnp.array(cont)})
     training_key, partial_key = random.split(training_key, num=2)
     loss, metrics = wm.loss(partial_key, data, state)
-    print(loss.items())
-    print(metrics.items())
+    for k, v in loss.items():
+        print(f'{k}: {v.shape}')
+    #print(metrics.items())
 
 def lossfn(loss: dict):
     pass
