@@ -3,7 +3,7 @@ import optax
 import equinox as eqx
 from jax import random
 import jax.numpy as jnp
-from utils import eqx_adaptive_grad_clip
+from utils import eqx_adaptive_grad_clip, MSEDist
 from networks import RSSM, ImageEncoder, ImageDecoder, MLP
 
 
@@ -75,9 +75,10 @@ class WorldModel(eqx.Module):
         )
         for name, head in self.heads.items():
             data_name = name
+            dist = head(feat)
             if data_name == "decoder":
                 data_name = "image"
-            dist = head(feat)
+                dist = MSEDist(dist.astype("float32"), 3, 'sum')
             metrics.update({name: dist.mean()})
             loss.update(
                 {

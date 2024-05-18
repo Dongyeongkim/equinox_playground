@@ -558,11 +558,10 @@ class ImageDecoder(eqx.Module):
         x = cast_to_compute(x, self.cdtype)
         x = self._linear_proj(x)
         x = x.reshape(x.shape[0], self.minres, self.minres, -1)
-        print(x.shape)
         for layer in self._convtr_layers:
             x = layer(x)
         x += 0.5
-        return TransformedMseDist(x, 0, symlog, symexp)
+        return x  # remove applying dist on here due to it is not possible to apply vmap on here
 
 
 class MLP(eqx.Module):
