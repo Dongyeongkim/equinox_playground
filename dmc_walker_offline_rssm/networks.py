@@ -272,6 +272,7 @@ class RSSM(eqx.Module):
             init=carry,
             xs=(actions, embeds, resets),
         )  # https://github.com/patrick-kidger/equinox/issues/558
+        outs = {k: v.swapaxes(tdim, 0) for k, v in outs.items()}
         return outs
 
     def imagine(self, key, carry, actions, tdim=1):
@@ -286,6 +287,7 @@ class RSSM(eqx.Module):
         carry, states = jax.lax.scan(
             f=lambda *a, **kw: self.img_step(*a, **kw), init=carry, xs=actions
         )  # https://github.com/patrick-kidger/equinox/issues/558
+        states = {k: v.swapaxes(tdim, 0) for k, v in states.items()}
         return carry, states
 
     def obs_step(self, carry, action_embed_reset):
@@ -483,6 +485,7 @@ class ImageDecoder(eqx.Module):
     def __init__(
         self,
         key,
+        deter,
         latent_dim,
         latent_cls,
         debug_outer,
@@ -505,7 +508,7 @@ class ImageDecoder(eqx.Module):
         key, param_key = random.split(key, num=2)
         self._linear_proj = Linear(
             param_key,
-            in_features=latent_dim * latent_cls,
+            in_features=latent_dim * latent_cls + deter,
             out_features=(minres**2) * channels[-1],
             act=act,
             norm=norm,
@@ -555,6 +558,7 @@ class ImageDecoder(eqx.Module):
         x = cast_to_compute(x, self.cdtype)
         x = self._linear_proj(x)
         x = x.reshape(x.shape[0], self.minres, self.minres, -1)
+        print(x.shape)
         for layer in self._convtr_layers:
             x = layer(x)
         x += 0.5
@@ -666,8 +670,11 @@ class MLP(eqx.Module):
 class Dist(eqx.Module):
     _mean: eqx.Module
     _std: eqx.Module
-    out_shape: tuple
+    _dist: str
+    shape: tuple
+    padding: int
     num_unit: int
+    out_shape: tuple
     minstd: float
     maxstd: float
     unimix: float
@@ -697,17 +704,30 @@ class Dist(eqx.Module):
         self.maxstd = maxstd
         self.unimix = unimix
         self.bins = bins
-        self.num_unit = int(np.prod(out_shape))
+        self._dist = dist
+        self.shape = ()
         self.out_shape = out_shape if isinstance(out_shape, tuple) else tuple(out_shape)
+        self.num_unit = int(np.prod(self.out_shape))
         self.pdtype = pdtype
         self.cdtype = cdtype
+
+        if "twohot" in self._dist or self._dist == "softmax":
+            self.padding = int(self.bins % 2)
+            self.shape = (*self.out_shape, self.bins + self.padding)
+            self.num_unit = int(np.prod(self.shape))
+        else:
+            self.padding = 0
 
         if "normal" in dist:
             mean_key, std_key = random.split(key, num=2)
             self._mean = Linear(
                 mean_key,
                 in_features=in_features,
-                out_features=self.num_unit,
+                out_features=(
+                    int(np.prod(self.shape))
+                    if len(self.shape)
+                    else int(np.prod(self.out_shape))
+                ),
                 use_bias=use_bias,
                 outscale=outscale,
                 winit=winit,
@@ -719,7 +739,7 @@ class Dist(eqx.Module):
             self._std = Linear(
                 std_key,
                 in_features=in_features,
-                out_features=self.num_unit,
+                out_features=int(np.prod(self.out_shape)),
                 use_bias=use_bias,
                 outscale=outscale,
                 winit=winit,
@@ -732,7 +752,11 @@ class Dist(eqx.Module):
             self._mean = Linear(
                 key,
                 in_features=in_features,
-                out_features=self.num_unit,
+                out_features=(
+                    int(np.prod(self.shape))
+                    if len(self.shape)
+                    else int(np.prod(self.out_shape))
+                ),
                 use_bias=use_bias,
                 outscale=outscale,
                 winit=winit,
@@ -748,26 +772,19 @@ class Dist(eqx.Module):
         return dist
 
     def inner(self, inputs):
-        shape = self.out_shape
-        padding = 0
-
-        if "twohot" in self.dist or self.dist == "softmax":
-            padding = int(self.bins % 2)
-            shape = (*self.out_shape, self.bins + padding)
-
         out = self._mean(inputs)
-        out = out.reshape(inputs.shape[:-1] + shape).astype("float32")
-        out = out[..., :-padding] if padding else out
+        out = out.reshape(inputs.shape[:-1] + self.shape).astype("float32")
+        out = out[..., : -self.padding] if self.padding else out
 
-        if "normal" in self.dist:
+        if "normal" in self._dist:
             std = self._std(inputs)
             std = std.reshape(inputs.shape[:-1] + self.out_shape).astype("float32")
 
-        if self.dist == "symlog_mse":
+        if self._dist == "symlog_mse":
             fwd, bwd = symlog, symexp
             return TransformedMseDist(out, len(self.out_shape), fwd, bwd)
 
-        if self.dist == "hyperbolic_mse":
+        if self._dist == "hyperbolic_mse":
             fwd = lambda x, eps=1e-3: (
                 jnp.sign(x) * (jnp.sqrt(jnp.abs(x) + 1) - 1) + eps * x
             )
@@ -780,11 +797,11 @@ class Dist(eqx.Module):
             )
             return TransformedMseDist(out, len(self.out_shape), fwd, bwd)
 
-        if self.dist == "symlog_and_twohot":
+        if self._dist == "symlog_and_twohot":
             bins = np.linspace(-20, 20, out.shape[-1])
             return TwoHotDist(out, bins, len(self.out_shape), symlog, symexp)
 
-        if self.dist == "symexp_twohot":
+        if self._dist == "symexp_twohot":
             if out.shape[-1] % 2 == 1:
                 half = jnp.linspace(
                     -20, 0, (out.shape[-1] - 1) // 2 + 1, dtype="float32"
@@ -797,7 +814,7 @@ class Dist(eqx.Module):
                 bins = jnp.concatenate([half, -half[::-1]], 0)
             return TwoHotDist(out, bins, len(self.out_shape))
 
-        if self.dist == "hyperbolic_twohot":
+        if self._dist == "hyperbolic_twohot":
             eps = 0.001
             f = lambda x: np.sign(x) * (
                 np.square(
@@ -808,13 +825,13 @@ class Dist(eqx.Module):
             bins = f(np.linspace(-300, 300, out.shape[-1]))
             return TwoHotDist(out, bins, len(self.out_shape))
 
-        if self.dist == "mse":
+        if self._dist == "mse":
             return MSEDist(out, len(self.out_shape), "sum")
 
-        if self.dist == "huber":
+        if self._dist == "huber":
             return HuberDist(out, len(self.out_shape), "sum")
 
-        if self.dist == "normal":
+        if self._dist == "normal":
             lo, hi = self.minstd, self.maxstd
             std = (hi - lo) * jax.nn.sigmoid(std + 2.0) + lo
             dist = tfd.Normal(jnp.tanh(out), std)
@@ -823,7 +840,7 @@ class Dist(eqx.Module):
             dist.maxent = self.num_unit * tfd.Normal(0.0, hi).entropy()
             return dist
 
-        if self.dist == "trunc_normal":
+        if self._dist == "trunc_normal":
             lo, hi = self.minstd, self.maxstd
             std = (hi - lo) * jax.nn.sigmoid(std + 2.0) + lo
             dist = tfd.TruncatedNormal(jnp.tanh(out), std, -1, 1)
@@ -836,19 +853,19 @@ class Dist(eqx.Module):
             )
             return dist
 
-        if self.dist == "binary":
+        if self._dist == "binary":
             dist = tfd.Bernoulli(out)
             if self.out_shape:
                 dist = tfd.Independent(dist, len(self.out_shape))
             return dist
 
-        if self.dist == "softmax":
+        if self._dist == "softmax":
             dist = tfd.Categorical(out)
             if len(self.out_shape) > 1:
                 dist = tfd.Independent(dist, len(self.out_shape) - 1)
             return dist
 
-        if self.dist == "onehot":
+        if self._dist == "onehot":
             if self.unimix:
                 probs = jax.nn.softmax(out, -1)
                 uniform = jnp.ones_like(probs) / probs.shape[-1]

@@ -13,7 +13,7 @@ class WorldModel(eqx.Module):
     heads: dict
 
     obs_space: tuple
-    act_space: tuple
+    act_space: int
     config: dict
 
     def __init__(self, key, obs_space, act_space, config):
@@ -24,6 +24,7 @@ class WorldModel(eqx.Module):
         self.config.rssm.action_dim = self.act_space
         self.config.rssm.channel_depth = self.config.encoder.channel_depth
         self.config.rssm.channel_mults = self.config.encoder.channel_mults
+        self.config.decoder.deter = self.config.rssm.deter
         self.config.decoder.latent_dim = self.config.rssm.latent_dim
         self.config.decoder.latent_cls = self.config.rssm.latent_cls
 
@@ -33,9 +34,13 @@ class WorldModel(eqx.Module):
             heads_param_key, num=3
         )
         self.heads = {
-            "decoder": ImageDecoder(
-                dec_param_key,
-                **config.decoder,
+            "decoder": eqx.filter_vmap(
+                ImageDecoder(
+                    dec_param_key,
+                    **config.decoder,
+                ),
+                in_axes=1,
+                out_axes=1,
             ),
             "reward": MLP(
                 rew_param_key,
@@ -49,12 +54,14 @@ class WorldModel(eqx.Module):
 
     def initial(self, batch_size):
         prev_latent = self.rssm.initial(batch_size)
-        prev_action = jnp.zeros((batch_size, *self.act_space.shape))
+        prev_action = jnp.zeros(
+            (batch_size, self.act_space)
+        )  # act_space should be integer
         return prev_latent, prev_action
 
     def loss(self, key, data, state):
         step_key, loss_key = random.split(key, num=2)
-        embeds = eqx.filter_vmap(self.encoder, in_axes=1)(data["obs"])
+        embeds = eqx.filter_vmap(self.encoder, in_axes=1, out_axes=1)(data["image"])
         prev_latent, prev_action = state
         prev_actions = jnp.concatenate(
             [prev_action[:, None, ...], data["action"][:, :-1, ...]], 1
@@ -63,15 +70,27 @@ class WorldModel(eqx.Module):
             step_key, prev_latent, prev_actions, embeds, data["is_first"]
         )
         loss, metrics = self.rssm.loss(loss_key, outs)
-        feat = jnp.concatenate([outs["stoch"], outs["deter"]], -1)
+        feat = jnp.concatenate(
+            [outs["stoch"].reshape(*outs["stoch"].shape[:-2], -1), outs["deter"]], -1
+        )
         for name, head in self.heads.items():
+            data_name = name
+            if data_name == "decoder":
+                data_name = "image"
             dist = head(feat)
             metrics.update({name: dist.mean()})
             loss.update(
-                {name: -dist.log_prob(jnp.squeeze(data[name]).astype("float32")).sum()}
+                {
+                    name: -dist.log_prob(
+                        jnp.squeeze(data[data_name]).astype("float32")
+                    ).sum()
+                }
             )
 
         return loss, metrics
+
+    def report(self, key, data):
+        pass
 
 
 class ImagActorCritic(eqx.Module):
@@ -153,4 +172,3 @@ if __name__ == "__main__":
     )
 
     wm = WorldModel(jax.random.key(0), (64, 64, 3), 6, config)
-
