@@ -80,26 +80,26 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
                     f"train/loss/{k}_loss", v, global_step=current_step
                 )
             
-            if epoch * len(ds["is_first"]) + step % 1000 == 0:
+            if current_step % 1000 == 0:
                 training_key, report_key = random.split(training_key)
                 report = wm.report(report_key, data)
                 for key, value in report.items():
                     if len(value.shape) == 0:
-                        summary_writer.add_scalar(f"train/log/{key}", value, global_step=current_step)
+                        summary_writer.add_scalar(f"report/log/{key}", value, global_step=current_step)
                     elif len(value.shape) == 1:
                         if len(value) > 1024:
                             value = value.copy()
                             np.random.shuffle(value)
                             value = value[:1024]
-                        summary_writer.add_histogram(f"train/log/{key}", value, global_step=current_step)
+                        summary_writer.add_histogram(f"report/log/{key}", value, global_step=current_step)
                     elif len(value.shape) == 2:
-                        summary_writer.add_image(f"train/log/{key}", value[..., None], global_step=current_step)
+                        summary_writer.add_image(f"report/log/{key}", value[..., None], global_step=current_step)
                     elif len(value.shape) == 3:
-                        summary_writer.add_image(f"train/log/{key}", value, global_step=current_step)
+                        summary_writer.add_image(f"report/log/{key}", value, global_step=current_step, dataformats="HWC")
                     elif len(value.shape) == 4:
-                        summary_writer.add_image(f"train/log/{key}", value, global_step=current_step)
+                        summary_writer.add_images(f"report/log/{key}", value, global_step=current_step, dataformats="NHWC")
                     elif len(value.shape) == 5:
-                        summary_writer.add_video(f"train/log/{key}", value, global_step=current_step)
+                        summary_writer.add_video(f"report/log/{key}", value, global_step=current_step, dataformats="NTHWC")
                     else:
                         raise NotImplementedError
 

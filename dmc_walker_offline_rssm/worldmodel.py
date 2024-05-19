@@ -115,22 +115,22 @@ class WorldModel(eqx.Module):
         state = self.initial(len(data["is_first"]))
         report = {}
         losses, metrics = self.loss(loss_key, data, state)
-        report.update(losses)
+        report.update({f"{k}_loss": v.sum(axis=-1).mean() for k, v in losses.items()})
         report.update(metrics)
         carry, outs = self.rssm.observe(
             obs_key,
-            self.rssm.initial(6),
-            data["action"][:6, :5, ...],
-            eqx.filter_vmap(self.encoder, in_axes=1, out_axes=1)(data["image"])[:6, :5, ...],
-            data["is_first"][:6, :5, ...],
+            self.rssm.initial(8),
+            data["action"][:8, :5, ...],
+            eqx.filter_vmap(self.encoder, in_axes=1, out_axes=1)(data["image"])[:8, :5, ...],
+            data["is_first"][:8, :5, ...],
         )
         
         feat = self.rssm.get_feat(outs)
         recon = symexp(self.heads["decoder"](feat))
-        _, states = self.rssm.imagine(img_key, carry, data["action"][:6, 5:, ...])
+        _, states = self.rssm.imagine(img_key, carry, data["action"][:8, 5:, ...])
         feat = self.rssm.get_feat(states)
         openl = symexp(self.heads["decoder"](feat))
-        truth = data["image"][:6].astype(jnp.float32)
+        truth = data["image"][:8].astype(jnp.float32)
         model = jnp.concatenate([recon[:, :5], openl], 1)
         error = (model - truth + 1) / 2
         video = jnp.concatenate([truth, model, error], 2)
