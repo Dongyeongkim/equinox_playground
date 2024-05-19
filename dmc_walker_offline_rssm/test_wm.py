@@ -104,7 +104,7 @@ if __name__ == "__main__":
     config = ml_collections.ConfigDict(
         {
             "encoder": {
-                "channel_depth": 32,
+                "channel_depth": 64,
                 "channel_mults": (1, 2, 3, 4, 4),
                 "act": "silu",
                 "norm": "rms",
@@ -116,10 +116,10 @@ if __name__ == "__main__":
                 "cdtype": "bfloat16",
             },
             "rssm": {
-                "deter": 4096,
-                "hidden": 512,
-                "latent_dim": 32,
-                "latent_cls": 32,
+                "deter": 8192,
+                "hidden": 1024,
+                "latent_dim": 64,
+                "latent_cls": 64,
                 "act": "silu",
                 "norm": "rms",
                 "unimix": 0.01,
@@ -134,7 +134,7 @@ if __name__ == "__main__":
                 "cdtype": "bfloat16",
             },
             "decoder": {
-                "channel_depth": 32,
+                "channel_depth": 64,
                 "channel_mults": (1, 2, 3, 4, 4),
                 "act": "silu",
                 "norm": "rms",
@@ -143,12 +143,13 @@ if __name__ == "__main__":
                 "kernel_size": 5,
                 "stride": 2,
                 "minres": 4,
+                "use_sigmoid": True,
                 "cdtype": "bfloat16",
             },
             "reward_head": {
                 "num_layers": 1,
-                "in_features": 5120,
-                "num_units": 512,
+                "in_features": 12288,
+                "num_units": 1024,
                 "act": "silu",
                 "norm": "rms",
                 "out_shape": (),
@@ -159,8 +160,8 @@ if __name__ == "__main__":
             },
             "cont_head": {
                 "num_layers": 1,
-                "in_features": 5120,
-                "num_units": 512,
+                "in_features": 12288,
+                "num_units": 1024,
                 "act": "silu",
                 "norm": "rms",
                 "out_shape": (),
@@ -170,10 +171,10 @@ if __name__ == "__main__":
                 "cdtype": "bfloat16",
             },
             "seed": 0,
-            "lr": 1e-4,
+            "lr": 4e-5,
             "batch_size": 16,
             "traj_length": 64,
-            "precision": 16,
+            "precision": 32,
             "num_epoch": 100,
         }
     )
