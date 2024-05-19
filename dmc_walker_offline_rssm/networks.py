@@ -267,20 +267,19 @@ class RSSM(eqx.Module):
         )  # change carry and action swapaxes (B, T) -> (T, B)
 
         carry["key"] = key
-        _, outs = jax.lax.scan(
+        carry, outs = jax.lax.scan(
             f=lambda *a, **kw: self.obs_step(*a, **kw),
             init=carry,
             xs=(actions, embeds, resets),
         )  # https://github.com/patrick-kidger/equinox/issues/558
         outs = {k: v.swapaxes(tdim, 0) for k, v in outs.items()}
-        return outs
+        return carry, outs
 
     def imagine(self, key, carry, actions, tdim=1):
         # input as (B, T, C), calculates in (T, B, C), and output as (B, T, C)
         actions = actions.swapaxes(
             0, tdim
         )  # change carry and action swapaxes (B, T, C) -> (T, B, C)
-        carry = cast_to_compute(carry, self.cdtype)
         actions = cast_to_compute(actions, self.cdtype)
 
         carry["key"] = key
@@ -349,12 +348,17 @@ class RSSM(eqx.Module):
         if free:
             dyn = jnp.maximum(dyn, free)
             rep = jnp.maximum(rep, free)
-        
+
         metrics.update(
             tensorstats(key, self._dist(outs["prior"]).entropy(), "prior_ent")
         )
         metrics.update(tensorstats(key, self._dist(outs["post"]).entropy(), "post_ent"))
         return {"dyn": dyn, "rep": rep}, metrics
+
+    def get_feat(self, state):
+        return jnp.concatenate(
+            [state["stoch"].reshape(*state["stoch"].shape[:-2], -1), state["deter"]], -1
+        )
 
     def _prior(self, feat):
         x = feat

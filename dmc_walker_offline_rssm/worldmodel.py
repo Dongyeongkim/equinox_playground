@@ -3,7 +3,7 @@ import optax
 import equinox as eqx
 from jax import random
 import jax.numpy as jnp
-from utils import eqx_adaptive_grad_clip, TransformedMseDist, symlog, symexp
+from utils import eqx_adaptive_grad_clip, TransformedMseDist, symlog, symexp, video_grid
 from networks import RSSM, ImageEncoder, ImageDecoder, MLP
 
 
@@ -65,13 +65,11 @@ class WorldModel(eqx.Module):
         prev_actions = jnp.concatenate(
             [prev_action[:, None, ...], data["action"][:, :-1, ...]], 1
         )
-        outs = self.rssm.observe(
+        _, outs = self.rssm.observe(
             step_key, prev_latent, prev_actions, embeds, data["is_first"]
         )
         loss, metrics = self.rssm.loss(loss_key, outs)
-        feat = jnp.concatenate(
-            [outs["stoch"].reshape(*outs["stoch"].shape[:-2], -1), outs["deter"]], -1
-        )
+        feat = self.rssm.get_feat(outs)
         for name, head in self.heads.items():
             log_name = name
             data_name = name
@@ -79,15 +77,67 @@ class WorldModel(eqx.Module):
             if data_name == "decoder":
                 log_name = "recon"
                 data_name = "image"
-                dist = TransformedMseDist(dist.astype("float32"), 3, symlog, symexp, "sum")
-            if log_name == "recon":
-                metrics.update({log_name: dist.mean()})
+                dist = TransformedMseDist(
+                    dist.astype("float32"), 3, symlog, symexp, "sum"
+                )
             loss.update({log_name: -dist.log_prob(data[data_name].astype("float32"))})
 
         return loss, metrics
 
+    def imagine(self, key, policy, start, horizon):
+        first_cont = (1.0 - start["is_terminal"]).astype(jnp.float32)
+        keys = list(self.rssm.initial(1).keys())
+        start = {k: v for k, v in start.items() if k in keys}
+        start["key"] = key
+        start["action"] = policy(start)
+
+        def step(prev, _):
+            prev = prev.copy()
+            carry, _ = self.rssm.img_step(prev, prev.pop("action"))
+            return {**carry, "action": policy(carry)}
+
+        traj = jax.lax.scan(
+            f=lambda *a, **kw: self.obs_step(*a, **kw),
+            init=jnp.arange(horizon),
+            xs=start,
+            unroll=self.config.imag_unroll,
+        )
+
+        traj = {k: jnp.concatenate([start[k][None], v], 0) for k, v in traj.items()}
+        cont = self.heads["cont"](traj).mode()
+        traj["cont"] = jnp.concatenate([first_cont[None], cont[1:]], 0)
+        discount = 1 - 1 / self.config.horizon
+        traj["weight"] = jnp.cumprod(discount * traj["cont"], 0) / discount
+        return traj
+
     def report(self, key, data):
-        pass
+        loss_key, obs_key, img_key = random.split(key, num=3)
+        state = self.initial(len(data["is_first"]))
+        report = {}
+        losses, metrics = self.loss(loss_key, data, state)
+        report.update(losses)
+        report.update(metrics)
+        carry, outs = self.rssm.observe(
+            obs_key,
+            self.rssm.initial(6),
+            data["action"][:6, :5, ...],
+            eqx.filter_vmap(self.encoder, in_axes=1, out_axes=1)(data["image"])[:6, :5, ...],
+            data["is_first"][:6, :5, ...],
+        )
+        
+        feat = self.rssm.get_feat(outs)
+        recon = symexp(self.heads["decoder"](feat))
+        _, states = self.rssm.imagine(img_key, carry, data["action"][:6, 5:, ...])
+        feat = self.rssm.get_feat(states)
+        openl = symexp(self.heads["decoder"](feat))
+        truth = data["image"][:6].astype(jnp.float32)
+        model = jnp.concatenate([recon[:, :5], openl], 1)
+        error = (model - truth + 1) / 2
+        video = jnp.concatenate([truth, model, error], 2)
+        report[f"openl_video"] = video
+        report[f"openl_image"] = video_grid(video)
+        
+        return report
 
 
 class ImagActorCritic(eqx.Module):
