@@ -8,7 +8,7 @@ import jax.numpy as jnp
 from dataset import get_dataset
 from worldmodel import WorldModel
 import tensorboardX as tensorboard
-from utils import eqx_adaptive_grad_clip, video_grid
+from utils import video_grid, Optimizer
 
 
 @eqx.filter_jit
@@ -41,10 +41,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
     param_key, training_key = random.split(random.key(config.seed), num=2)
 
     wm = WorldModel(param_key, (64, 64, 3), 6, config)
-    optim = optax.chain(
-        optax.clip_by_global_norm(1000.0),
-        optax.adamaxw(learning_rate=config.lr),
-    )
+    optim = Optimizer(lr=4e-5, eps=1e-20, agc=0.3, momentum=True)
 
     ds = get_dataset(
         "buffer/",
@@ -54,7 +51,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
     )
     data = {}
     state = wm.initial(config.batch_size)
-    opt_state = optim.init(eqx.filter(wm, eqx.is_array))
+    opt_state = optim.init(wm)
     for epoch in range(config.num_epoch):
         for step, (image, action, reward, is_first, cont) in enumerate(
             zip(ds["image"], ds["action"], ds["reward"], ds["is_first"], ds["cont"])
@@ -65,9 +62,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
             data.update({"is_first": jnp.array(is_first)})
             data.update({"cont": jnp.array(cont)})
             training_key, partial_key = random.split(training_key, num=2)
-            wm, opt_state, total_loss, loss_and_info = train_step(
-                wm, optim, opt_state, partial_key, data, state
-            )
+            wm, opt_state, total_loss, loss_and_info = optim.update(opt_state, partial_key, loss, wm, data, state)
             if (epoch * len(ds["is_first"]) + step) % 1000 == 0:
                 print(f"epoch: {epoch} step: {step}, curent loss is: {total_loss}")
             loss_info, info = loss_and_info

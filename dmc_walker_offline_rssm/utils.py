@@ -16,6 +16,109 @@ sg = lambda x: jax.tree_util.tree_map(jax.lax.stop_gradient, x)
 
 # will add optimizer
 
+
+class Optimizer(eqx.Module):
+    lr: float
+    scaler: str
+    eps: float
+    beta1: float
+    beta2: float
+
+    # Learning rate
+    warmup: int
+    anneal: int
+
+    # Regularization
+    wd: float
+    wd_pattern: str
+
+    # Clipping
+    pmin: float
+    globclip: float
+    agc: float
+
+    # Smoothing
+    momentum: bool
+    nesterov: bool
+
+    # chain(optimiser)
+    chain: optax.chain
+
+    def __init__(
+        self,
+        lr,
+        scaler="adam",
+        eps=1e-7,
+        beta1=0.9,
+        beta2=0.999,
+        warmup=1000,
+        anneal=0,
+        wd=0.0,
+        wd_pattern=r"/weight$",
+        pmin=1e-3,
+        globclip=0.0,
+        agc=0.0,
+        momentum=False,
+        nesterov=False,
+    ):
+        self.lr = lr
+        self.scaler = scaler
+        self.eps = eps
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.warmup = warmup
+        self.anneal = anneal
+        self.wd = wd
+        self.wd_pattern = wd_pattern
+        self.pmin = pmin
+        self.globclip = globclip
+        self.agc = agc
+        self.momentum = momentum
+        self.nesterov = nesterov
+
+        chain = []
+        if self.globclip:
+            chain.append(optax.clip_by_global_norm(self.globclip))
+        if self.agc:
+            chain.append(eqx_adaptive_grad_clip(self.agc, self.pmin))
+
+        if self.scaler == "adam":
+            chain.append(optax.scale_by_adam(self.beta1, self.beta2, self.eps))
+
+        elif self.scaler == "rms":
+            chain.append(scale_by_rms(self.beta2, self.eps))
+
+        else:
+            raise NotImplementedError(self.scaler)
+
+        if self.momentum:
+            chain.append(scale_by_momentum(self.beta1, self.nesterov))
+
+        if self.wd:
+            assert not self.wd_pattern[0].isnumeric(), self.wd_pattern
+            pattern = re.compile(self.wd_pattern)
+            wdmaskfn = lambda params: {k: bool(pattern.search(k)) for k in params}
+            chain.append(optax.add_decayed_weights(self.wd, wdmaskfn))
+
+        if isinstance(self.lr, dict):
+            chain.append(scale_by_groups({pfx: -lr for pfx, lr in self.lr.items()}))
+        else:
+            chain.append(optax.scale(-self.lr))
+
+        self.chain = optax.chain(*chain)
+
+        ## float16 is not allowed, only bfloat16 and float32 or above precision are allowed.
+
+    def init(self, modules):
+        return self.chain.init(eqx.filter(modules, eqx.is_array))
+    
+    @eqx.filter_jit
+    def update(self, opt_state, key, lossfn, modules, data, state):
+        (total_loss, loss_and_info), grads = eqx.filter_value_and_grad(lossfn, has_aux=True)(modules, key, data, state)
+        updates, opt_state = self.chain.update(grads, opt_state, modules)
+        modules = eqx.apply_updates(modules, updates)
+        return modules, opt_state, total_loss, loss_and_info
+
 # video grid
 
 

@@ -3,7 +3,7 @@ import optax
 import equinox as eqx
 from jax import random
 import jax.numpy as jnp
-from utils import eqx_adaptive_grad_clip, TransformedMseDist, symlog, symexp, video_grid
+from utils import eqx_adaptive_grad_clip, TransformedMseDist, symlog, symexp, video_grid, Optimizer
 from networks import RSSM, ImageEncoder, ImageDecoder, MLP
 
 
@@ -81,7 +81,7 @@ class WorldModel(eqx.Module):
                     dist.astype("float32"), 3, symlog, symexp, "sum"
                 )
             loss.update({log_name: -dist.log_prob(data[data_name].astype("float32"))})
-
+        
         return loss, metrics
 
     def imagine(self, key, policy, start, horizon):
@@ -121,10 +121,12 @@ class WorldModel(eqx.Module):
             obs_key,
             self.rssm.initial(8),
             data["action"][:8, :5, ...],
-            eqx.filter_vmap(self.encoder, in_axes=1, out_axes=1)(data["image"])[:8, :5, ...],
+            eqx.filter_vmap(self.encoder, in_axes=1, out_axes=1)(data["image"])[
+                :8, :5, ...
+            ],
             data["is_first"][:8, :5, ...],
         )
-        
+
         feat = self.rssm.get_feat(outs)
         recon = symexp(self.heads["decoder"](feat))
         _, states = self.rssm.imagine(img_key, carry, data["action"][:8, 5:, ...])
@@ -136,7 +138,7 @@ class WorldModel(eqx.Module):
         video = jnp.concatenate([truth, model, error], 2)
         report[f"openl_video"] = video
         report[f"openl_image"] = video_grid(video)
-        
+
         return report
 
 
