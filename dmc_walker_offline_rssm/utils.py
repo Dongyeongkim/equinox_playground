@@ -21,9 +21,6 @@ minimum_ = lambda u, v: jnp.float32(jnp.minimum(u, v))
 maximum_ = lambda u, v: jnp.float32(jnp.maximum(u, v))
 
 
-# will add optimizer
-
-
 class Optimizer(eqx.Module):
     lr: float
     scaler: str
@@ -52,21 +49,21 @@ class Optimizer(eqx.Module):
     chain: optax.chain
 
     def __init__(
-            self,
-            lr,
-            scaler="adam",
-            eps=1e-7,
-            beta1=0.9,
-            beta2=0.999,
-            warmup=1000,
-            anneal=0,
-            wd=0.0,
-            wd_pattern=r"/weight$",
-            pmin=1e-3,
-            globclip=0.0,
-            agc=0.0,
-            momentum=False,
-            nesterov=False,
+        self,
+        lr,
+        scaler="adam",
+        eps=1e-7,
+        beta1=0.9,
+        beta2=0.999,
+        warmup=1000,
+        anneal=0,
+        wd=0.0,
+        wd_pattern=r"/weight$",
+        pmin=1e-3,
+        globclip=0.0,
+        agc=0.0,
+        momentum=False,
+        nesterov=False,
     ):
         self.lr = lr
         self.scaler = scaler
@@ -121,7 +118,9 @@ class Optimizer(eqx.Module):
 
     @eqx.filter_jit
     def update(self, opt_state, key, lossfn, modules, data, state):
-        (total_loss, loss_and_info), grads = eqx.filter_value_and_grad(lossfn, has_aux=True)(modules, key, data, state)
+        (total_loss, loss_and_info), grads = eqx.filter_value_and_grad(
+            lossfn, has_aux=True
+        )(modules, key, data, state)
         updates, opt_state = self.chain.update(grads, opt_state, modules)
         modules = eqx.apply_updates(modules, updates)
         return modules, opt_state, total_loss, loss_and_info
@@ -346,7 +345,7 @@ class MSEDist:
         self._dims = tuple([-x for x in range(1, dims + 1)])
         self._agg = agg
         self.batch_shape = mode.shape[: len(mode.shape) - dims]
-        self.event_shape = mode.shape[len(mode.shape) - dims:]
+        self.event_shape = mode.shape[len(mode.shape) - dims :]
 
     def mode(self):
         return self._mode
@@ -373,7 +372,7 @@ class HuberDist:
         self._dims = tuple([-x for x in range(1, dims + 1)])
         self._agg = agg
         self.batch_shape = mode.shape[: len(mode.shape) - dims]
-        self.event_shape = mode.shape[len(mode.shape) - dims:]
+        self.event_shape = mode.shape[len(mode.shape) - dims :]
 
     def mode(self):
         return self._mode
@@ -404,7 +403,7 @@ class TransformedMseDist:
         self._agg = agg
         self._tol = tol
         self.batch_shape = mode.shape[: len(mode.shape) - dims]
-        self.event_shape = mode.shape[len(mode.shape) - dims:]
+        self.event_shape = mode.shape[len(mode.shape) - dims :]
 
     def mode(self):
         return self._bwd(self._mode)
@@ -438,7 +437,7 @@ class TwoHotDist:
         self.transfwd = transfwd or (lambda x: x)
         self.transbwd = transbwd or (lambda x: x)
         self.batch_shape = logits.shape[: len(logits.shape) - dims - 1]
-        self.event_shape = logits.shape[len(logits.shape) - dims: -1]
+        self.event_shape = logits.shape[len(logits.shape) - dims : -1]
 
     def mean(self):
         # The naive implementation results in a non-zero result even if the bins
@@ -451,18 +450,18 @@ class TwoHotDist:
         if n % 2 == 1:
             m = (n - 1) // 2
             p1 = self.probs[..., :m]
-            p2 = self.probs[..., m: m + 1]
-            p3 = self.probs[..., m + 1:]
+            p2 = self.probs[..., m : m + 1]
+            p3 = self.probs[..., m + 1 :]
             b1 = self.bins[..., :m]
-            b2 = self.bins[..., m: m + 1]
-            b3 = self.bins[..., m + 1:]
+            b2 = self.bins[..., m : m + 1]
+            b3 = self.bins[..., m + 1 :]
             wavg = (p2 * b2).sum(-1) + ((p1 * b1)[..., ::-1] + (p3 * b3)).sum(-1)
             return self.transbwd(wavg)
         else:
             p1 = self.probs[..., : n // 2]
-            p2 = self.probs[..., n // 2:]
+            p2 = self.probs[..., n // 2 :]
             b1 = self.bins[..., : n // 2]
-            b2 = self.bins[..., n // 2:]
+            b2 = self.bins[..., n // 2 :]
             wavg = ((p1 * b1)[..., ::-1] + (p2 * b2)).sum(-1)
             return self.transbwd(wavg)
 
@@ -483,8 +482,8 @@ class TwoHotDist:
         weight_below = dist_to_above / total
         weight_above = dist_to_below / total
         target = (
-                jax.nn.one_hot(below, len(self.bins)) * weight_below[..., None]
-                + jax.nn.one_hot(above, len(self.bins)) * weight_above[..., None]
+            jax.nn.one_hot(below, len(self.bins)) * weight_below[..., None]
+            + jax.nn.one_hot(above, len(self.bins)) * weight_above[..., None]
         )
         log_pred = self.logits - jax.scipy.special.logsumexp(
             self.logits, -1, keepdims=True
@@ -505,18 +504,18 @@ class SlowUpdater(eqx.Module):
     def __call__(self):
         assert self.src.find()
         updates = self.updates
-        need_init = (updates == 0)
-        need_update = (updates % self.period == 0)
+        need_init = updates == 0
+        need_update = updates % self.period == 0
         mix = jnp.clip(1.0 * need_init + self.fraction * need_update, 0, 1)
         params = {
-            k.replace(f'/{self.src.name}/', f'/{self.dst.name}/'): v
-            for k, v in self.src.find().items()}
-        ema = tree_map(
-            lambda s, d: mix * s + (1 - mix) * d,
-            params, self.dst.find())
+            k.replace(f"/{self.src.name}/", f"/{self.dst.name}/"): v
+            for k, v in self.src.find().items()
+        }
+        ema = tree_map(lambda s, d: mix * s + (1 - mix) * d, params, self.dst.find())
         for name, param in ema.items():
-            assert param.dtype == jnp.float32, (
-                f'EMA of {name} should be float32 not {param.dtype}')
+            assert (
+                param.dtype == jnp.float32
+            ), f"EMA of {name} should be float32 not {param.dtype}"
         self.dst.put(ema)
         self.updates = updates + 1
 
@@ -535,20 +534,25 @@ class Moments(eqx.Module):
 
     impl: str = eqx.static_field()
 
-    def __init__(self, impl='mean_std'):
+    def __init__(self, impl="mean_std"):
         self.impl = impl
 
-        self.low = jnp.float32(0.)
-        self.high = jnp.float32(0.)
-        self.corr = jnp.float32(0.)
-        self.sqrs = jnp.float32(0.)
-        self.mean = jnp.float32(0.)
+        self.low = jnp.float32(0.0)
+        self.high = jnp.float32(0.0)
+        self.corr = jnp.float32(0.0)
+        self.sqrs = jnp.float32(0.0)
+        self.mean = jnp.float32(0.0)
 
-        if self.impl == 'off': pass
-        elif self.impl == 'mean_std': pass
-        elif self.impl == 'min_max': pass
-        elif self.impl == 'perc': pass
-        elif self.impl == 'perc_corr': pass
+        if self.impl == "off":
+            pass
+        elif self.impl == "mean_std":
+            pass
+        elif self.impl == "min_max":
+            pass
+        elif self.impl == "perc":
+            pass
+        elif self.impl == "perc_corr":
+            pass
         else:
             raise NotImplementedError(self.impl)
 
@@ -557,54 +561,66 @@ class Moments(eqx.Module):
         return self.stats()
 
     def update(self, _x):
-        x = sg(_x.astype('float32'))
+        x = sg(_x.astype("float32"))
         m = self.rate
-        if self.impl == 'off':
+        if self.impl == "off":
             return self
-        elif self.impl == 'mean_std':
+        elif self.impl == "mean_std":
             new_mean = (1 - m) * self.mean + m * mean_(x)
             new_sqrs = (1 - m) * self.sqrs + m * mean_(x * x)
             new_corr = (1 - m) * self.corr + m * 1.0
-            return eqx.tree_at(lambda mod: (mod.mean, mod.sqrs, mod.corr), self, (new_mean, new_sqrs, new_corr))
-        elif self.impl == 'min_max':
+            return eqx.tree_at(
+                lambda mod: (mod.mean, mod.sqrs, mod.corr),
+                self,
+                (new_mean, new_sqrs, new_corr),
+            )
+        elif self.impl == "min_max":
             low, high = min_(x), max_(x)
             new_low = (1 - m) * minimum_(self.low, low) + m * low
             new_high = (1 - m) * maximum_(self.high, high) + m * high
-            return eqx.tree_at(lambda mod: (mod.low, mod.high), self, (new_low, new_high))
-        elif self.impl == 'perc':
+            return eqx.tree_at(
+                lambda mod: (mod.low, mod.high), self, (new_low, new_high)
+            )
+        elif self.impl == "perc":
             low, high = per_(x, self.perclo), per_(x, self.perchi)
             new_low = (1 - m) * self.low + m * low
             new_high = (1 - m) * self.high + m * high
-            return eqx.tree_at(lambda mod: (mod.low, mod.high), self, (new_low, new_high))
-        elif self.impl == 'perc_corr':
+            return eqx.tree_at(
+                lambda mod: (mod.low, mod.high), self, (new_low, new_high)
+            )
+        elif self.impl == "perc_corr":
             low, high = per_(x, self.perclo), per_(x, self.perchi)
             new_low = (1 - m) * self.low + m * low
             new_high = (1 - m) * self.high + m * high
             new_corr = (1 - m) * self.corr + m * 1.0
-            return eqx.tree_at(lambda mod: (mod.low, mod.high, mod.corr), self, (new_low, new_high, new_corr))
+            return eqx.tree_at(
+                lambda mod: (mod.low, mod.high, mod.corr),
+                self,
+                (new_low, new_high, new_corr),
+            )
         else:
             raise NotImplementedError(self.impl)
 
     def stats(self):
-        if self.impl == 'off':
+        if self.impl == "off":
             return 0.0, 1.0
-        elif self.impl == 'mean_std':
+        elif self.impl == "mean_std":
             corr = jnp.maximum(self.rate, self.corr)
             mean = self.mean / corr
-            std = jnp.sqrt(jax.nn.relu(self.sqrs / corr - mean ** 2))
+            std = jnp.sqrt(jax.nn.relu(self.sqrs / corr - mean**2))
             std = jnp.maximum(self.limit, std)
             return sg(mean), sg(std)
-        elif self.impl == 'min_max':
+        elif self.impl == "min_max":
             offset = self.low
             span = self.high - self.low
             span = jnp.maximum(self.limit, span)
             return sg(offset), sg(span)
-        elif self.impl == 'perc':
+        elif self.impl == "perc":
             offset = self.low
             span = self.high - self.low
             span = jnp.maximum(self.limit, span)
             return sg(offset), sg(span)
-        elif self.impl == 'perc_corr':
+        elif self.impl == "perc_corr":
             corr = jnp.maximum(self.rate, self.corr)
             lo = self.low / corr
             hi = self.high / corr
@@ -615,7 +631,7 @@ class Moments(eqx.Module):
             raise NotImplementedError(self.impl)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     m = Moments()
     x = jnp.float32(5)
     print(m(x))
