@@ -502,7 +502,6 @@ class SlowUpdater(eqx.Module):
         self.period = period
         self.updates = 0
 
-    @eqx.filter_jit
     def __call__(self):
         assert self.src.find()
         updates = self.updates
@@ -553,12 +552,10 @@ class Moments(eqx.Module):
         else:
             raise NotImplementedError(self.impl)
 
-    @eqx.filter_jit
     def __call__(self, x, update=True):
         update and self.update(x)
         return self.stats()
 
-    @eqx.filter_jit
     def update(self, _x):
         x = sg(_x.astype('float32'))
         m = self.rate
@@ -588,7 +585,6 @@ class Moments(eqx.Module):
         else:
             raise NotImplementedError(self.impl)
 
-    @eqx.filter_jit
     def stats(self):
         if self.impl == 'off':
             return 0.0, 1.0
