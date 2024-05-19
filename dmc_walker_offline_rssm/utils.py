@@ -7,6 +7,7 @@ import equinox as eqx
 import jax.numpy as jnp
 from optax._src import base
 from optax._src.clipping import unitwise_norm, unitwise_clip
+from jax.tree_util import tree_map
 
 from tensorflow_probability.substrates import jax as tfp
 
@@ -45,21 +46,21 @@ class Optimizer(eqx.Module):
     chain: optax.chain
 
     def __init__(
-        self,
-        lr,
-        scaler="adam",
-        eps=1e-7,
-        beta1=0.9,
-        beta2=0.999,
-        warmup=1000,
-        anneal=0,
-        wd=0.0,
-        wd_pattern=r"/weight$",
-        pmin=1e-3,
-        globclip=0.0,
-        agc=0.0,
-        momentum=False,
-        nesterov=False,
+            self,
+            lr,
+            scaler="adam",
+            eps=1e-7,
+            beta1=0.9,
+            beta2=0.999,
+            warmup=1000,
+            anneal=0,
+            wd=0.0,
+            wd_pattern=r"/weight$",
+            pmin=1e-3,
+            globclip=0.0,
+            agc=0.0,
+            momentum=False,
+            nesterov=False,
     ):
         self.lr = lr
         self.scaler = scaler
@@ -111,13 +112,14 @@ class Optimizer(eqx.Module):
 
     def init(self, modules):
         return self.chain.init(eqx.filter(modules, eqx.is_array))
-    
+
     @eqx.filter_jit
     def update(self, opt_state, key, lossfn, modules, data, state):
         (total_loss, loss_and_info), grads = eqx.filter_value_and_grad(lossfn, has_aux=True)(modules, key, data, state)
         updates, opt_state = self.chain.update(grads, opt_state, modules)
         modules = eqx.apply_updates(modules, updates)
         return modules, opt_state, total_loss, loss_and_info
+
 
 # video grid
 
@@ -218,7 +220,6 @@ def eqx_adaptive_grad_clip(clipping: float, eps: float = 1e-3):
 
 
 def scale_by_rms(beta=0.999, eps=1e-8):
-
     def init_fn(params):
         nu = jax.tree_util.tree_map(lambda t: jnp.zeros_like(t, "float32"), params)
         step = jnp.zeros((), "int32")
@@ -339,7 +340,7 @@ class MSEDist:
         self._dims = tuple([-x for x in range(1, dims + 1)])
         self._agg = agg
         self.batch_shape = mode.shape[: len(mode.shape) - dims]
-        self.event_shape = mode.shape[len(mode.shape) - dims :]
+        self.event_shape = mode.shape[len(mode.shape) - dims:]
 
     def mode(self):
         return self._mode
@@ -366,7 +367,7 @@ class HuberDist:
         self._dims = tuple([-x for x in range(1, dims + 1)])
         self._agg = agg
         self.batch_shape = mode.shape[: len(mode.shape) - dims]
-        self.event_shape = mode.shape[len(mode.shape) - dims :]
+        self.event_shape = mode.shape[len(mode.shape) - dims:]
 
     def mode(self):
         return self._mode
@@ -397,7 +398,7 @@ class TransformedMseDist:
         self._agg = agg
         self._tol = tol
         self.batch_shape = mode.shape[: len(mode.shape) - dims]
-        self.event_shape = mode.shape[len(mode.shape) - dims :]
+        self.event_shape = mode.shape[len(mode.shape) - dims:]
 
     def mode(self):
         return self._bwd(self._mode)
@@ -431,7 +432,7 @@ class TwoHotDist:
         self.transfwd = transfwd or (lambda x: x)
         self.transbwd = transbwd or (lambda x: x)
         self.batch_shape = logits.shape[: len(logits.shape) - dims - 1]
-        self.event_shape = logits.shape[len(logits.shape) - dims : -1]
+        self.event_shape = logits.shape[len(logits.shape) - dims: -1]
 
     def mean(self):
         # The naive implementation results in a non-zero result even if the bins
@@ -444,18 +445,18 @@ class TwoHotDist:
         if n % 2 == 1:
             m = (n - 1) // 2
             p1 = self.probs[..., :m]
-            p2 = self.probs[..., m : m + 1]
-            p3 = self.probs[..., m + 1 :]
+            p2 = self.probs[..., m: m + 1]
+            p3 = self.probs[..., m + 1:]
             b1 = self.bins[..., :m]
-            b2 = self.bins[..., m : m + 1]
-            b3 = self.bins[..., m + 1 :]
+            b2 = self.bins[..., m: m + 1]
+            b3 = self.bins[..., m + 1:]
             wavg = (p2 * b2).sum(-1) + ((p1 * b1)[..., ::-1] + (p3 * b3)).sum(-1)
             return self.transbwd(wavg)
         else:
             p1 = self.probs[..., : n // 2]
-            p2 = self.probs[..., n // 2 :]
+            p2 = self.probs[..., n // 2:]
             b1 = self.bins[..., : n // 2]
-            b2 = self.bins[..., n // 2 :]
+            b2 = self.bins[..., n // 2:]
             wavg = ((p1 * b1)[..., ::-1] + (p2 * b2)).sum(-1)
             return self.transbwd(wavg)
 
@@ -476,10 +477,138 @@ class TwoHotDist:
         weight_below = dist_to_above / total
         weight_above = dist_to_below / total
         target = (
-            jax.nn.one_hot(below, len(self.bins)) * weight_below[..., None]
-            + jax.nn.one_hot(above, len(self.bins)) * weight_above[..., None]
+                jax.nn.one_hot(below, len(self.bins)) * weight_below[..., None]
+                + jax.nn.one_hot(above, len(self.bins)) * weight_above[..., None]
         )
         log_pred = self.logits - jax.scipy.special.logsumexp(
             self.logits, -1, keepdims=True
         )
         return (target * log_pred).sum(-1).sum(self.dims)
+
+
+class SlowUpdater(eqx.Module):
+
+    updates: int = 0
+
+    def __init__(self, src, dst, fraction=1.0, period=1):
+        self.src = src
+        self.dst = dst
+        self.fraction = fraction
+        self.period = period
+
+    def __call__(self):
+        assert self.src.find()
+        updates = self.updates
+        need_init = (updates == 0)
+        need_update = (updates % self.period == 0)
+        mix = jnp.clip(1.0 * need_init + self.fraction * need_update, 0, 1)
+        params = {
+            k.replace(f'/{self.src.name}/', f'/{self.dst.name}/'): v
+            for k, v in self.src.find().items()}
+        ema = tree_map(
+            lambda s, d: mix * s + (1 - mix) * d,
+            params, self.dst.find())
+        for name, param in ema.items():
+            assert param.dtype == jnp.float32, (
+                f'EMA of {name} should be float32 not {param.dtype}')
+        self.dst.put(ema)
+        self.updates = updates + 1
+
+
+class Moments(eqx.Module):
+    rate: float = 0.01
+    limit: float = 1e-8
+    perclo: float = 5.0
+    perchi: float = 95.0
+
+    mean: float
+    sqrs: float
+    corr: float
+    low: float
+    high: float
+
+    def __init__(self, impl='mean_std'):
+        self.impl = impl
+        if self.impl == 'off':
+            pass
+        elif self.impl == 'mean_std':
+            self.mean = 0.
+            self.sqrs = 0.
+            self.corr = 0.
+        elif self.impl == 'min_max':
+            self.low = 0.
+            self.high = 0.
+        elif self.impl == 'perc':
+            self.low = 0.
+            self.high = 0.
+        elif self.impl == 'perc_corr':
+            self.low = 0.
+            self.high = 0.
+            self.corr = 0.
+        else:
+            raise NotImplementedError(self.impl)
+
+    def __call__(self, x, update=True):
+        update and self.update(x)
+        return self.stats()
+
+    def update(self, x):
+        mean = lambda v: float(jnp.mean(v))
+        min_ = lambda v: float(jnp.min(v))
+        max_ = lambda v: float(jnp.max(v))
+        per = lambda u, v: float(jnp.percentile(u, v))
+        minimum = lambda u, v: float(jnp.minimum(u, v))
+        maximum = lambda u, v: float(jnp.maximum(u, v))
+        x = sg(x.astype('float32'))
+        m = self.rate
+        if self.impl == 'off':
+            pass
+        elif self.impl == 'mean_std':
+            self.mean = ((1 - m) * self.mean + m * mean(x))
+            self.sqrs = ((1 - m) * self.sqrs + m * mean(x * x))
+            self.corr = ((1 - m) * self.corr + m * 1.0)
+        elif self.impl == 'min_max':
+            low, high = min_(x), max_(x)
+            self.low = ((1 - m) * minimum(self.low, low) + m * low)
+            self.high = ((1 - m) * maximum(self.high, high) + m * high)
+        elif self.impl == 'perc':
+            low, high = per(x, self.perclo), per(x, self.perchi)
+            self.low = ((1 - m) * self.low + m * low)
+            self.high = ((1 - m) * self.high + m * high)
+
+        elif self.impl == 'perc_corr':
+            low, high = per(x, self.perclo), per(x, self.perchi)
+            self.low = ((1 - m) * self.low + m * low)
+            self.high = ((1 - m) * self.high + m * high)
+            self.corr = ((1 - m) * self.corr + m * 1.0)
+        else:
+            raise NotImplementedError(self.impl)
+
+    def stats(self):
+        if self.impl == 'off':
+            return 0.0, 1.0
+        elif self.impl == 'mean_std':
+            corr = jnp.maximum(self.rate, self.corr)
+            mean = self.mean / corr
+            std = jnp.sqrt(jax.nn.relu(self.sqrs / corr - mean ** 2))
+            std = jnp.maximum(self.limit, std)
+            return sg(mean), sg(std)
+        elif self.impl == 'min_max':
+            offset = self.low
+            span = self.high - self.low
+            span = jnp.maximum(self.limit, span)
+            return sg(offset), sg(span)
+        elif self.impl == 'perc':
+            offset = self.low
+            span = self.high - self.low
+            span = jnp.maximum(self.limit, span)
+            return sg(offset), sg(span)
+        elif self.impl == 'perc_corr':
+            corr = jnp.maximum(self.rate, self.corr)
+            lo = self.low / corr
+            hi = self.high / corr
+            span = hi - lo
+            span = jnp.maximum(self.limit, span)
+            return sg(lo), sg(span)
+        else:
+            raise NotImplementedError(self.impl)
