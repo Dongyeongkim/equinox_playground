@@ -484,6 +484,7 @@ class ImageDecoder(eqx.Module):
     _convtr_layers: list
     _linear_proj: eqx.Module
     minres: int
+    use_sigmoid: bool = False
     pdtype: str = "float32"
     cdtype: str = "float32"
 
@@ -502,6 +503,7 @@ class ImageDecoder(eqx.Module):
         act="silu",
         winit="normal",
         minres=4,
+        use_sigmoid=False,
         use_rgb=True,
         pdtype="float32",
         cdtype="float32",
@@ -556,6 +558,7 @@ class ImageDecoder(eqx.Module):
                     )
                 )
         self.minres = minres
+        self.use_sigmoid = use_sigmoid
         self.pdtype = pdtype
         self.cdtype = cdtype
 
@@ -565,7 +568,7 @@ class ImageDecoder(eqx.Module):
         x = x.reshape(x.shape[0], self.minres, self.minres, -1)
         for layer in self._convtr_layers:
             x = layer(x)
-        x += 0.5
+        x = x + 0.5 if self.use_sigmoid else jax.nn.sigmoid(x) 
         return x  # remove applying dist on here due to it is not possible to apply vmap on here
 
 
