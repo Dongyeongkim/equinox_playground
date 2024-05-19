@@ -13,6 +13,12 @@ from tensorflow_probability.substrates import jax as tfp
 
 tfd = tfp.distributions
 sg = lambda x: jax.tree_util.tree_map(jax.lax.stop_gradient, x)
+mean_ = lambda v: jnp.float32(jnp.mean(v))
+min_ = lambda v: jnp.float32(jnp.min(v))
+max_ = lambda v: jnp.float32(jnp.max(v))
+per_ = lambda u, v: jnp.float32(jnp.percentile(u, v))
+minimum_ = lambda u, v: jnp.float32(jnp.minimum(u, v))
+maximum_ = lambda u, v: jnp.float32(jnp.maximum(u, v))
 
 
 # will add optimizer
@@ -487,15 +493,16 @@ class TwoHotDist:
 
 
 class SlowUpdater(eqx.Module):
-
-    updates: int = 0
+    updates: int = eqx.field()
 
     def __init__(self, src, dst, fraction=1.0, period=1):
         self.src = src
         self.dst = dst
         self.fraction = fraction
         self.period = period
+        self.updates = 0
 
+    @eqx.filter_jit
     def __call__(self):
         assert self.src.find()
         updates = self.updates
@@ -521,69 +528,67 @@ class Moments(eqx.Module):
     perclo: float = 5.0
     perchi: float = 95.0
 
-    mean: float
-    sqrs: float
-    corr: float
-    low: float
-    high: float
+    mean: jnp.float32 = eqx.field()
+    sqrs: jnp.float32 = eqx.field()
+    corr: jnp.float32 = eqx.field()
+    low: jnp.float32 = eqx.field()
+    high: jnp.float32 = eqx.field()
+
+    impl: str = eqx.static_field()
 
     def __init__(self, impl='mean_std'):
         self.impl = impl
-        if self.impl == 'off':
-            pass
-        elif self.impl == 'mean_std':
-            self.mean = 0.
-            self.sqrs = 0.
-            self.corr = 0.
-        elif self.impl == 'min_max':
-            self.low = 0.
-            self.high = 0.
-        elif self.impl == 'perc':
-            self.low = 0.
-            self.high = 0.
-        elif self.impl == 'perc_corr':
-            self.low = 0.
-            self.high = 0.
-            self.corr = 0.
+
+        self.low = jnp.float32(0.)
+        self.high = jnp.float32(0.)
+        self.corr = jnp.float32(0.)
+        self.sqrs = jnp.float32(0.)
+        self.mean = jnp.float32(0.)
+
+        if self.impl == 'off': pass
+        elif self.impl == 'mean_std': pass
+        elif self.impl == 'min_max': pass
+        elif self.impl == 'perc': pass
+        elif self.impl == 'perc_corr': pass
         else:
             raise NotImplementedError(self.impl)
 
+    @eqx.filter_jit
     def __call__(self, x, update=True):
         update and self.update(x)
         return self.stats()
 
-    def update(self, x):
-        mean = lambda v: float(jnp.mean(v))
-        min_ = lambda v: float(jnp.min(v))
-        max_ = lambda v: float(jnp.max(v))
-        per = lambda u, v: float(jnp.percentile(u, v))
-        minimum = lambda u, v: float(jnp.minimum(u, v))
-        maximum = lambda u, v: float(jnp.maximum(u, v))
-        x = sg(x.astype('float32'))
+    @eqx.filter_jit
+    def update(self, _x):
+        x = sg(_x.astype('float32'))
         m = self.rate
         if self.impl == 'off':
-            pass
+            return self
         elif self.impl == 'mean_std':
-            self.mean = ((1 - m) * self.mean + m * mean(x))
-            self.sqrs = ((1 - m) * self.sqrs + m * mean(x * x))
-            self.corr = ((1 - m) * self.corr + m * 1.0)
+            new_mean = (1 - m) * self.mean + m * mean_(x)
+            new_sqrs = (1 - m) * self.sqrs + m * mean_(x * x)
+            new_corr = (1 - m) * self.corr + m * 1.0
+            return eqx.tree_at(lambda mod: (mod.mean, mod.sqrs, mod.corr), self, (new_mean, new_sqrs, new_corr))
         elif self.impl == 'min_max':
             low, high = min_(x), max_(x)
-            self.low = ((1 - m) * minimum(self.low, low) + m * low)
-            self.high = ((1 - m) * maximum(self.high, high) + m * high)
+            new_low = (1 - m) * minimum_(self.low, low) + m * low
+            new_high = (1 - m) * maximum_(self.high, high) + m * high
+            return eqx.tree_at(lambda mod: (mod.low, mod.high), self, (new_low, new_high))
         elif self.impl == 'perc':
-            low, high = per(x, self.perclo), per(x, self.perchi)
-            self.low = ((1 - m) * self.low + m * low)
-            self.high = ((1 - m) * self.high + m * high)
-
+            low, high = per_(x, self.perclo), per_(x, self.perchi)
+            new_low = (1 - m) * self.low + m * low
+            new_high = (1 - m) * self.high + m * high
+            return eqx.tree_at(lambda mod: (mod.low, mod.high), self, (new_low, new_high))
         elif self.impl == 'perc_corr':
-            low, high = per(x, self.perclo), per(x, self.perchi)
-            self.low = ((1 - m) * self.low + m * low)
-            self.high = ((1 - m) * self.high + m * high)
-            self.corr = ((1 - m) * self.corr + m * 1.0)
+            low, high = per_(x, self.perclo), per_(x, self.perchi)
+            new_low = (1 - m) * self.low + m * low
+            new_high = (1 - m) * self.high + m * high
+            new_corr = (1 - m) * self.corr + m * 1.0
+            return eqx.tree_at(lambda mod: (mod.low, mod.high, mod.corr), self, (new_low, new_high, new_corr))
         else:
             raise NotImplementedError(self.impl)
 
+    @eqx.filter_jit
     def stats(self):
         if self.impl == 'off':
             return 0.0, 1.0
@@ -612,3 +617,12 @@ class Moments(eqx.Module):
             return sg(lo), sg(span)
         else:
             raise NotImplementedError(self.impl)
+
+
+if __name__ == '__main__':
+    m = Moments()
+    x = jnp.float32(5)
+    print(m(x))
+    print(m.stats())
+    print(m(x))
+    print(m.stats())
