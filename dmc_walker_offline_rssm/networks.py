@@ -482,8 +482,12 @@ class ImageEncoder(eqx.Module):
 
 class ImageDecoder(eqx.Module):
     _convtr_layers: list
-    _linear_proj: eqx.Module
+    _deter_proj: eqx.Module
+    _stoch_proj: eqx.Module
+    _stoch_proj_hid: eqx.Module
+    _space_norm: eqx.Module
     minres: int
+    num_groups: int
     use_sigmoid: bool = False
     pdtype: str = "float32"
     cdtype: str = "float32"
@@ -499,6 +503,8 @@ class ImageDecoder(eqx.Module):
         channel_mults,
         kernel_size,
         stride,
+        num_units=1024,
+        num_groups=8,
         norm="rms",
         act="silu",
         winit="normal",
@@ -508,20 +514,55 @@ class ImageDecoder(eqx.Module):
         pdtype="float32",
         cdtype="float32",
     ):
-        channels = (3 if use_rgb else 1,) + tuple(
-            [channel_depth * mult for mult in channel_mults]
+        assert (
+            num_units % (minres**2) == 0
+        ), "units should be divisible by the square of minres"
+        channels = (
+            (3 if use_rgb else 1,)
+            + tuple([channel_depth * mult for mult in channel_mults[:-1]])
+            + tuple([num_units // (minres**2)])
         )
 
         key, param_key = random.split(key, num=2)
-        self._linear_proj = Linear(
+        self._deter_proj = BlockLinear(
             param_key,
-            in_features=latent_dim * latent_cls + deter,
+            in_features=deter,
             out_features=(minres**2) * channels[-1],
+            num_groups=8,
             act=act,
             norm=norm,
             pdtype=pdtype,
             cdtype=cdtype,
         )
+        key, param_key = random.split(key, num=2)
+        self._stoch_proj_hid = Linear(
+            param_key,
+            in_features=latent_dim * latent_cls,
+            out_features=2 * num_units,
+            act=act,
+            norm=norm,
+            pdtype=pdtype,
+            cdtype=cdtype,
+        )
+
+        key, param_key = random.split(key, num=2)
+        self._stoch_proj = Linear(
+            param_key,
+            in_features=2 * num_units,
+            out_features=num_units,
+            act=act,
+            norm=norm,
+            pdtype=pdtype,
+            cdtype=cdtype,
+        )
+        self._space_norm = Norm(
+            num_features=num_units // (minres**2),
+            impl=norm,
+            act=act,
+            pdtype=pdtype,
+            cdtype=cdtype,
+        )
+        self.num_groups = num_groups
         self._convtr_layers = []
         for i in reversed(range(1, len(channels))):
             stride_ = 1 if (debug_outer and (i == 1)) else stride
@@ -563,12 +604,35 @@ class ImageDecoder(eqx.Module):
         self.cdtype = cdtype
 
     def __call__(self, x):
-        x = cast_to_compute(x, self.cdtype)
-        x = self._linear_proj(x)
+        x0 = self._deter_proj(x["deter"])
+
+        x0 = einops.rearrange(
+            x0,
+            "... (g h w c) -> ... h w (g c)",
+            h=self.minres,
+            w=self.minres,
+            g=self.num_groups,
+        )
+
+        x1 = einops.rearrange(
+            cast_to_compute(x["stoch"], self.cdtype),
+            " ... l c -> ... (l c)",
+            h=self.minres,
+            w=self.minres,
+        )
+        x1 = self._stoch_proj_hid(x1)
+        x1 = self._stoch_proj(x1)
+        x1 = einops.rearrange(
+            x1,
+            "... (h w c) -> ... h w c",
+            h=self.minres,
+            w=self.minres,
+        )
+        x = self._space_norm(x0 + x1)
         x = x.reshape(x.shape[0], self.minres, self.minres, -1)
         for layer in self._convtr_layers:
             x = layer(x)
-        x = x + 0.5 if self.use_sigmoid else jax.nn.sigmoid(x) 
+        x = jax.nn.sigmoid(x) if self.use_sigmoid else x + 0.5
         return x  # remove applying dist on here due to it is not possible to apply vmap on here
 
 

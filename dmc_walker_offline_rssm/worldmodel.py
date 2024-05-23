@@ -1,18 +1,10 @@
 import jax
 import optax
+import numpy as np
 import equinox as eqx
 from jax import random
 import jax.numpy as jnp
-from utils import (
-    eqx_adaptive_grad_clip,
-    TransformedMseDist,
-    symlog,
-    symexp,
-    video_grid,
-    Optimizer,
-    tensorstats,
-    subsample,
-)
+from utils import MSEDist, video_grid, tensorstats, subsample
 from networks import RSSM, ImageEncoder, ImageDecoder, MLP
 from ml_collections import FrozenConfigDict
 from typing import Callable
@@ -33,13 +25,6 @@ class WorldModel(eqx.Module):
         encoder_param_key, rssm_param_key, heads_param_key = random.split(key, num=3)
         self.obs_space = {"0": obs_space}
         self.act_space = act_space
-        config.rssm.action_dim = self.act_space
-        # config.rssm.action_dim = self.act_space.shape
-        config.rssm.channel_depth = config.encoder.channel_depth
-        config.rssm.channel_mults = config.encoder.channel_mults
-        config.decoder.deter = config.rssm.deter
-        config.decoder.latent_dim = config.rssm.latent_dim
-        config.decoder.latent_cls = config.rssm.latent_cls
         self.encoder = ImageEncoder(encoder_param_key, **config.encoder)
         self.rssm = RSSM(rssm_param_key, **config.rssm)
         dec_param_key, rew_param_key, cont_param_key = random.split(
@@ -56,10 +41,12 @@ class WorldModel(eqx.Module):
             ),
             "reward": MLP(
                 rew_param_key,
+                out_shape=(),
                 **config.reward_head,
             ),
             "cont": MLP(
                 cont_param_key,
+                out_shape=(),
                 **config.cont_head,
             ),
         }
@@ -83,23 +70,23 @@ class WorldModel(eqx.Module):
             step_key, prev_latent, prev_actions, embeds, data["is_first"]
         )
         loss, metrics = self.rssm.loss(loss_key, outs)
-        feat = self.rssm.get_feat(outs)
         for name, head in self.heads.items():
             log_name = name
             data_name = name
-            dist = head(feat)
             if data_name == "decoder":
                 log_name = "recon"
                 data_name = "image"
-                dist = TransformedMseDist(
-                    dist.astype("float32"), 3, symlog, symexp, "sum"
-                )
+                dist = head(outs)
+                dist = MSEDist(dist.astype("float32"), 3, "sum")
+            else:
+                feat = self.rssm.get_feat(outs)
+                dist = head(feat)
             loss.update({log_name: -dist.log_prob(data[data_name].astype("float32"))})
 
         return loss, metrics
 
     def imagine(self, key, policy, start, horizon):
-        first_cont = (1.0 - start["is_terminal"]).astype(jnp.float32)
+        first_cont = (1.0 - start["is_terminal"]).astype("float32")
         keys = list(self.rssm.initial(1).keys())
         start = {k: v for k, v in start.items() if k in keys}
         start["key"] = key
@@ -140,16 +127,13 @@ class WorldModel(eqx.Module):
             ],
             data["is_first"][:8, :5, ...],
         )
-
-        feat = self.rssm.get_feat(outs)
-        recon = symexp(self.heads["decoder"](feat).astype("float32"))
+        recon = np.float32(self.heads["decoder"](outs).astype("float32"))
         _, states = self.rssm.imagine(img_key, carry, data["action"][:8, 5:, ...])
-        feat = self.rssm.get_feat(states)
-        openl = symexp(self.heads["decoder"](feat).astype("float32"))
-        truth = data["image"][:8].astype(jnp.float32)
-        model = jnp.concatenate([recon[:, :5], openl], 1)
+        openl = np.float32(self.heads["decoder"](states).astype("float32"))
+        truth = np.float32(data["image"][:8])
+        model = np.concatenate([recon[:, :5], openl], 1)
         error = (model - truth + 1) / 2
-        video = jnp.concatenate([truth, model, error], 2)
+        video = np.concatenate([truth, model, error], 2)
         report[f"openl_video"] = video
         report[f"openl_image"] = video_grid(video)
 

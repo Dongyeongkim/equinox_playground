@@ -1,5 +1,5 @@
-import jax
-import optax
+import os
+import hydra
 import numpy as np
 import ml_collections
 import equinox as eqx
@@ -98,85 +98,13 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
                     else:
                         raise NotImplementedError
 
+@hydra.main(version_base=None, config_path=".", config_name="config")
+def main(cfg):
+    config = ml_collections.ConfigDict(cfg)
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(config.gpu_id)
+    path = hydra.core.hydra_config.HydraConfig.get()["runtime"]["output_dir"]
+    train_and_evaluate(config, path)
 
 
 if __name__ == "__main__":
-    config = ml_collections.ConfigDict(
-        {
-            "encoder": {
-                "channel_depth": 64,
-                "channel_mults": (1, 2, 3, 4, 4),
-                "act": "silu",
-                "norm": "rms",
-                "winit": "normal",
-                "debug_outer": True,
-                "kernel_size": 5,
-                "stride": 2,
-                "minres": 4,
-                "cdtype": "bfloat16",
-            },
-            "rssm": {
-                "deter": 8192,
-                "hidden": 1024,
-                "latent_dim": 64,
-                "latent_cls": 64,
-                "act": "silu",
-                "norm": "rms",
-                "unimix": 0.01,
-                "outscale": 1.0,
-                "winit": "normal",
-                "num_imglayer": 2,
-                "num_obslayer": 1,
-                "num_dynlayer": 1,
-                "blocks": 8,
-                "block_fans": False,
-                "block_norm": False,
-                "cdtype": "bfloat16",
-            },
-            "decoder": {
-                "channel_depth": 64,
-                "channel_mults": (1, 2, 3, 4, 4),
-                "act": "silu",
-                "norm": "rms",
-                "winit": "normal",
-                "debug_outer": True,
-                "kernel_size": 5,
-                "stride": 2,
-                "minres": 4,
-                "use_sigmoid": True,
-                "cdtype": "bfloat16",
-            },
-            "reward_head": {
-                "num_layers": 1,
-                "in_features": 12288,
-                "num_units": 1024,
-                "act": "silu",
-                "norm": "rms",
-                "out_shape": (),
-                "dist": "symexp_twohot",
-                "outscale": 0.0,
-                "winit": "normal",
-                "cdtype": "bfloat16",
-            },
-            "cont_head": {
-                "num_layers": 1,
-                "in_features": 12288,
-                "num_units": 1024,
-                "act": "silu",
-                "norm": "rms",
-                "out_shape": (),
-                "dist": "binary",
-                "outscale": 0.0,
-                "winit": "normal",
-                "cdtype": "bfloat16",
-            },
-            "seed": 0,
-            "lr": 4e-5,
-            "batch_size": 16,
-            "traj_length": 64,
-            "precision": 32,
-            "num_epoch": 100,
-        }
-    )
-
-    train_and_evaluate(config, "exp_local/")
+    main()
