@@ -565,7 +565,7 @@ class ImageDecoder(eqx.Module):
         self.num_groups = num_groups
         self._convtr_layers = []
         for i in reversed(range(1, len(channels))):
-            stride_ = 1 if (debug_outer and (i == 1)) else stride
+            stride_ = 1 if (debug_outer and (i == (len(channels) - 1))) else stride
             key, param_key = random.split(key, num=2)
             if i == len(channels) - 1:
                 self._convtr_layers.append(
@@ -576,7 +576,6 @@ class ImageDecoder(eqx.Module):
                         kernel_size=kernel_size,
                         stride=stride_,
                         transpose=True,
-                        norm=norm,
                         winit=winit,
                         pdtype=pdtype,
                         cdtype=cdtype,
@@ -617,8 +616,6 @@ class ImageDecoder(eqx.Module):
         x1 = einops.rearrange(
             cast_to_compute(x["stoch"], self.cdtype),
             " ... l c -> ... (l c)",
-            h=self.minres,
-            w=self.minres,
         )
         x1 = self._stoch_proj_hid(x1)
         x1 = self._stoch_proj(x1)

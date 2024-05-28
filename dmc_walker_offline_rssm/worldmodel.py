@@ -4,7 +4,7 @@ import numpy as np
 import equinox as eqx
 from jax import random
 import jax.numpy as jnp
-from utils import MSEDist, video_grid, tensorstats, subsample
+from utils import MSEDist, image_grid, tensorstats, subsample
 from networks import RSSM, ImageEncoder, ImageDecoder, MLP
 from ml_collections import FrozenConfigDict
 from typing import Callable
@@ -110,9 +110,9 @@ class WorldModel(eqx.Module):
         discount = 1 - 1 / self.config.horizon
         traj["weight"] = jnp.cumprod(discount * traj["cont"], 0) / discount
         return traj
-
+    
     def report(self, key, data):
-        loss_key, obs_key, img_key = random.split(key, num=3)
+        loss_key, obs_key, oloop_key, img_key = random.split(key, num=4)
         state = self.initial(len(data["is_first"]))
         report = {}
         losses, metrics = self.loss(loss_key, data, state)
@@ -120,6 +120,18 @@ class WorldModel(eqx.Module):
         report.update(metrics)
         carry, outs = self.rssm.observe(
             obs_key,
+            self.rssm.initial(8),
+            data["action"][:8, ...],
+            eqx.filter_vmap(self.encoder, in_axes=1, out_axes=1)(data["image"])[:8, ...],
+            data["is_first"][:8, ...],
+        )
+        full_recon = np.float32(self.heads["decoder"](outs).astype("float32"))
+        truth = np.float32(data["image"][:8])
+        error = (full_recon - truth + 1) / 2
+        recon_video = np.concatenate([truth, full_recon, error], 2)
+        report[f"recon_video"] = recon_video
+        carry, outs = self.rssm.observe(
+            oloop_key,
             self.rssm.initial(8),
             data["action"][:8, :5, ...],
             eqx.filter_vmap(self.encoder, in_axes=1, out_axes=1)(data["image"])[
@@ -135,7 +147,7 @@ class WorldModel(eqx.Module):
         error = (model - truth + 1) / 2
         video = np.concatenate([truth, model, error], 2)
         report[f"openl_video"] = video
-        report[f"openl_image"] = video_grid(video)
+        report[f"openl_image"] = image_grid(video[:6, :16, ...])
 
         return report
 

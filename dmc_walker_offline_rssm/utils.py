@@ -103,7 +103,10 @@ class Optimizer(eqx.Module):
             pattern = re.compile(self.wd_pattern)
             wdmaskfn = lambda params: {k: bool(pattern.search(k)) for k in params}
             chain.append(optax.add_decayed_weights(self.wd, wdmaskfn))
-
+        
+        if self.warmup > 0:
+            chain.append(optax.scale_by_schedule(optax.linear_schedule(0., 1., self.warmup)))
+            
         if isinstance(self.lr, dict):
             chain.append(scale_by_groups({pfx: -lr for pfx, lr in self.lr.items()}))
         else:
@@ -129,9 +132,9 @@ class Optimizer(eqx.Module):
 # video grid
 
 
-def video_grid(video):
+def image_grid(video):
     B, T, H, W, C = video.shape
-    return video.transpose((1, 2, 0, 3, 4)).reshape((T, H, B * W, C))
+    return video.transpose((1, 2, 0, 3, 4)).reshape((T, H, B*W, C))
 
 
 # normalising function
