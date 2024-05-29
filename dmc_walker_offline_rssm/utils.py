@@ -129,12 +129,32 @@ class Optimizer(eqx.Module):
         return modules, opt_state, total_loss, loss_and_info
 
 
-# video grid
+
+# image grid
 
 
 def image_grid(video):
     B, T, H, W, C = video.shape
-    return video.transpose((1, 2, 0, 3, 4)).reshape((T, H, B*W, C))
+    return video.transpose((0, 2, 1, 3, 4)).reshape((B*H, T*W, C))
+
+
+# colour frame
+
+def add_colour_frame(image, colour):
+    
+    if colour == "red":
+        colour = jnp.array([1., 0.,  0.])
+    elif colour == "green":
+        colour = jnp.array([0., 1., 0.])
+    else:
+        raise NotImplementedError
+    
+    image = image.at[:, :, :2, :].set(colour)
+    image = image.at[:, :, -2:,:].set(colour)
+    image = image.at[:, :, :, :2].set(colour)
+    image = image.at[:, :, :,-2:].set(colour)
+
+    return image
 
 
 # normalising function

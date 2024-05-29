@@ -4,7 +4,7 @@ import numpy as np
 import equinox as eqx
 from jax import random
 import jax.numpy as jnp
-from utils import MSEDist, image_grid, tensorstats, subsample
+from utils import MSEDist, image_grid, tensorstats, subsample, add_colour_frame
 from networks import RSSM, ImageEncoder, ImageDecoder, MLP
 from ml_collections import FrozenConfigDict
 from typing import Callable
@@ -112,25 +112,30 @@ class WorldModel(eqx.Module):
         return traj
     
     def report(self, key, data):
-        loss_key, obs_key, oloop_key, img_key = random.split(key, num=4)
-        state = self.initial(len(data["is_first"]))
-        report = {}
-        losses, metrics = self.loss(loss_key, data, state)
-        report.update({f"{k}_loss": v.sum(axis=-1).mean() for k, v in losses.items()})
-        report.update(metrics)
-        carry, outs = self.rssm.observe(
+        @eqx.filter_jit
+        def jittable_operation(key, data):
+            report = {}
+            loss_key, obs_key, oloop_key, img_key = random.split(key, num=4)
+            state = self.initial(len(data["is_first"]))
+            losses, metrics = self.loss(loss_key, data, state)
+            report.update({f"{k}_loss": v.sum(axis=-1).mean() for k, v in losses.items()})
+            report.update(metrics)
+            carry, outs = self.rssm.observe(
             obs_key,
             self.rssm.initial(8),
             data["action"][:8, ...],
             eqx.filter_vmap(self.encoder, in_axes=1, out_axes=1)(data["image"])[:8, ...],
-            data["is_first"][:8, ...],
-        )
-        full_recon = np.float32(self.heads["decoder"](outs).astype("float32"))
-        truth = np.float32(data["image"][:8])
-        error = (full_recon - truth + 1) / 2
-        recon_video = np.concatenate([truth, full_recon, error], 2)
-        report[f"recon_video"] = recon_video
-        carry, outs = self.rssm.observe(
+            data["is_first"][:8, ...]
+            )
+
+            truth = data["image"][:8].astype("float32")
+            full_recon = self.heads["decoder"](outs).astype("float32")
+            error = (full_recon - truth + 1) / 2
+            recon_video = jnp.concatenate([truth, add_colour_frame(full_recon, colour="green"), error], 2)
+            
+            report[f"recon_video"] = recon_video
+            
+            carry, outs = self.rssm.observe(
             oloop_key,
             self.rssm.initial(8),
             data["action"][:8, :5, ...],
@@ -138,16 +143,25 @@ class WorldModel(eqx.Module):
                 :8, :5, ...
             ],
             data["is_first"][:8, :5, ...],
-        )
-        recon = np.float32(self.heads["decoder"](outs).astype("float32"))
-        _, states = self.rssm.imagine(img_key, carry, data["action"][:8, 5:, ...])
-        openl = np.float32(self.heads["decoder"](states).astype("float32"))
-        truth = np.float32(data["image"][:8])
-        model = np.concatenate([recon[:, :5], openl], 1)
-        error = (model - truth + 1) / 2
-        video = np.concatenate([truth, model, error], 2)
-        report[f"openl_video"] = video
-        report[f"openl_image"] = image_grid(video[:6, :16, ...])
+            )
+            
+            recon = self.heads["decoder"](outs).astype("float32")
+            
+            _, states = self.rssm.imagine(img_key, carry, data["action"][:8, 5:, ...])
+            
+            openl = self.heads["decoder"](states).astype("float32")
+            model = jnp.concatenate([recon[:, :5], openl], 1)
+            error = (model - truth + 1) / 2
+            model_w_grid = jnp.concatenate([add_colour_frame(recon[:, :5], colour="green"), add_colour_frame(openl, colour="red")], 1)
+            
+            video = jnp.concatenate([truth, model_w_grid, error], 2)
+            report[f"openl_video"] = video
+            report[f"openl_image"] = image_grid(video)
+
+            return report
+        
+        report = jittable_operation(key, data)
+        report = {k: np.float32(v) for k, v in report.items()}
 
         return report
 
