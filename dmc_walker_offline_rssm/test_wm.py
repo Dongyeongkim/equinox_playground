@@ -8,7 +8,7 @@ import jax.numpy as jnp
 from dataset import get_dataset
 from worldmodel import WorldModel
 import tensorboardX as tensorboard
-from utils import video_grid, Optimizer
+from utils import Optimizer
 
 
 @eqx.filter_jit
@@ -41,7 +41,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: str):
     param_key, training_key = random.split(random.key(config.seed), num=2)
 
     wm = WorldModel(param_key, (64, 64, 3), 6, config)
-    optim = Optimizer(lr=4e-5, eps=1e-20, agc=0.3, momentum=True)
+    optim = Optimizer(lr=4e-5, scaler="rms", eps=1e-20, agc=0.3, momentum=True)
 
     ds = get_dataset(
         "buffer/",
