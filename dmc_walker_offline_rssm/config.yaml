@@ -75,7 +75,7 @@ lr: 4e-5
 batch_size: 16
 traj_length: 64
 precision: 32
-num_epoch: 100
+num_epoch: 1000
 
 
 hydra:

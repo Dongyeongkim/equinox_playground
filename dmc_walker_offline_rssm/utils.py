@@ -138,21 +138,22 @@ def image_grid(video):
     return video.transpose((0, 2, 1, 3, 4)).reshape((B*H, T*W, C))
 
 
-# colour frame
+# add colour frame, you SHOULD ADD JIT HERE; if it is not it will result OOM at last(due to copy)
 
+@eqx.filter_jit
 def add_colour_frame(image, colour):
-    
+
     if colour == "red":
-        colour = jnp.array([1., 0.,  0.])
+        colour = jnp.array([1.0, 0.0, 0.0])
     elif colour == "green":
-        colour = jnp.array([0., 1., 0.])
+        colour = jnp.array([0.0, 1.0, 0.0])
     else:
         raise NotImplementedError
-    
+
     image = image.at[:, :, :2, :].set(colour)
-    image = image.at[:, :, -2:,:].set(colour)
+    image = image.at[:, :, -2:, :].set(colour)
     image = image.at[:, :, :, :2].set(colour)
-    image = image.at[:, :, :,-2:].set(colour)
+    image = image.at[:, :, :, -2:].set(colour)
 
     return image
 
