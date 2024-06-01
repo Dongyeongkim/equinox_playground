@@ -95,19 +95,19 @@ class WorldModel(eqx.Module):
         def step(prev, _):
             prev = prev.copy()
             carry, _ = self.rssm.img_step(prev, prev.pop("action"))
-            return {**carry, "action": policy(carry)}
+            return {**carry, "action": policy(carry)}, {**carry, "action": policy(carry)}
 
-        traj = jax.lax.scan(
-            f=lambda *a, **kw: self.obs_step(*a, **kw),
-            init=jnp.arange(horizon),
-            xs=start,
-            unroll=self.config.imag_unroll,
+        carry, traj = jax.lax.scan(
+            f=lambda *a, **kw: step(*a, **kw),
+            init=start,
+            xs=jnp.arange(horizon)
         )
+        _, _ = start.pop("key"), traj.pop("key")
 
-        traj = {k: jnp.concatenate([start[k][None], v], 0) for k, v in traj.items()}
-        cont = self.heads["cont"](traj).mode()
-        traj["cont"] = jnp.concatenate([first_cont[None], cont[1:]], 0)
-        discount = 1 - 1 / self.config.horizon
+        traj = {k: jnp.concatenate([start[k][None], v], 0).swapaxes(1, 0) for k, v in traj.items()}
+        cont = self.heads["cont"](self.rssm.get_feat(traj)).mode()
+        traj["cont"] = jnp.concatenate([first_cont, cont[:, 1:]], 1)
+        discount = 1 - 1 / self.config.discount_horizon
         traj["weight"] = jnp.cumprod(discount * traj["cont"], 0) / discount
         return traj
     
